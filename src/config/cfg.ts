@@ -13,10 +13,10 @@ import { logger } from '../lib/logger.js';
  */
 /** A min–max pair, for values the document writes as "2 to 200 characters". */
 export interface CfgRange { min: number; max: number }
-export type CfgValue = number | boolean | string | string[] | CfgRange;
+export type CfgValue = number | boolean | string | string[] | number[] | CfgRange | Record<string, number>;
 interface CfgDef {
   label: string;
-  unit?: 'digits' | 'seconds' | 'minutes' | 'hours' | 'days' | 'characters' | 'years' | 'count' | 'per hour' | 'per minute';
+  unit?: 'digits' | 'seconds' | 'minutes' | 'hours' | 'days' | 'working days' | 'days before expiry' | 'characters' | 'years' | 'count' | 'per hour' | 'per minute' | 'MB' | '%';
   value: CfgValue;
   change: 'ADM' | 'Release';
   /** Smallest and largest allowed values for numbers, used when an override is set. */
@@ -57,6 +57,24 @@ const DEFS = {
   'CFG-79': { label: 'Grace after subscription end', unit: 'days', value: 7, change: 'ADM', range: [0, 90] },
   'CFG-83': { label: 'Extra OTP before approve, publish, plan change, configuration change', value: true, change: 'Release' },
   'CFG-99': { label: 'Requests per user per minute', unit: 'per minute', value: 120, change: 'ADM', range: [10, 100000] },
+  'CFG-26': { label: 'Allowed file types', value: ['PDF', 'JPG', 'JPEG', 'PNG'], change: 'ADM' },
+  'CFG-27': { label: 'Largest file', unit: 'MB', value: 10, change: 'ADM', range: [1, 50] },
+  'CFG-28': { label: 'Files per upload', unit: 'count', value: 5, change: 'ADM', range: [1, 20] },
+  'CFG-100': { label: 'KYC must be Verified before sharing a quotation', value: false, change: 'ADM' },
+  'CFG-105': { label: 'Licence number length', unit: 'characters', value: { min: 3, max: 30 }, change: 'Release' },
+  'CFG-106': { label: 'Agent code length', unit: 'characters', value: { min: 2, max: 30 }, change: 'Release' },
+  'CFG-124': {
+    label: 'Profile completion weights (total 100)',
+    value: { Personal: 15, Contact: 20, Professional: 20, Business: 10, KYC: 20, Insurers: 15 },
+    change: 'ADM',
+  },
+  'CFG-125': { label: 'KYC review target', unit: 'working days', value: 2, change: 'ADM', range: [1, 30] },
+  'CFG-126': { label: 'Allowed image types (photos, logos)', value: ['JPG', 'JPEG', 'PNG'], change: 'ADM' },
+  'CFG-127': { label: 'Largest image', unit: 'MB', value: 2, change: 'ADM', range: [1, 20] },
+  'CFG-128': { label: 'Youngest advisor age', unit: 'years', value: 18, change: 'Release' },
+  'CFG-129': { label: 'Profile milestones that create a notification', unit: '%', value: [50, 100], change: 'ADM' },
+  'CFG-151': { label: 'Most years of experience that can be entered', unit: 'years', value: 60, change: 'Release' },
+  'CFG-152': { label: 'Licence expiry warning starts', unit: 'days before expiry', value: 60, change: 'ADM', range: [1, 365] },
   'CFG-104': { label: 'Longest city name', unit: 'characters', value: 60, change: 'Release' },
   'CFG-109': { label: 'Short text length', unit: 'characters', value: { min: 2, max: 200 }, change: 'Release' },
   'CFG-112': { label: 'Longest email address', unit: 'characters', value: 254, change: 'Release' },

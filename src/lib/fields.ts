@@ -219,3 +219,58 @@ export const lists = {
 
 /** Edit forms: missing → unchanged; blank or null on a required field → GEN-01 (it cannot be cleared). */
 export const editable = <T extends z.ZodTypeAny>(s: T) => z.preprocess(blankToNull, s.optional());
+
+
+// ── Advisor profile fields (P-05) ──
+
+// FLD-06 Future date: a real date, IST today or later.
+export const todayOrLater = () =>
+  z.string({ invalid_type_error: 'VAL-04' }).transform((v, ctx) => {
+    const iso = parseDate(v);
+    if (!iso) return fail(ctx, 'VAL-04');
+    return iso < istToday() ? fail(ctx, 'VAL-07') : iso;
+  });
+
+// FLD-10 Whole number within the field's minimum and maximum.
+export const wholeNumber = (min: number, max: () => number) =>
+  z.union([z.number(), z.string()], { invalid_type_error: 'VAL-12' }).transform((raw, ctx) => {
+    const v = typeof raw === 'number' ? raw : raw.trim();
+    const n = typeof v === 'number' ? v : /^\d+$/.test(v) ? Number(v) : NaN;
+    return Number.isInteger(n) && n >= min && n <= max() ? n : fail(ctx, 'VAL-12', { min, max: max() });
+  });
+
+// FLD-16 IRDAI licence or POSP certificate number: CFG-105 length; letters, digits, hyphen, slash; uppercased.
+export const licenceNumber = () =>
+  z.string({ invalid_type_error: 'VAL-17' }).transform((raw, ctx) => {
+    const v = raw.trim().toUpperCase();
+    const { min, max } = cfgRange('CFG-105');
+    return v.length >= min && v.length <= max && /^[A-Z0-9/-]+$/.test(v) ? v : fail(ctx, 'VAL-17');
+  });
+
+/** GSTIN check character (FLD-34): the standard base-36 weighted checksum over the first 14 characters. */
+export function gstinChecksumValid(g: string): boolean {
+  const chars = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+  let sum = 0;
+  for (let i = 0; i < 14; i++) {
+    const p = chars.indexOf(g[i]!) * (i % 2 === 0 ? 1 : 2);
+    sum += Math.floor(p / 36) + (p % 36);
+  }
+  return chars[(36 - (sum % 36)) % 36] === g[14];
+}
+
+// FLD-34 GSTIN: optional; uppercased; 2-digit state code, 10-character PAN, 1 letter or digit, Z, 1 check
+// letter or digit. The BPD specifies the SHAPE only (its own example 29ABCDE1234F1Z5 fails the official check
+// character), so the check character is not verified. OPEN-QUESTIONS Q25 proposes enforcing gstinChecksumValid().
+export const gstin = () =>
+  z.string({ invalid_type_error: 'VAL-39' }).transform((raw, ctx) => {
+    const v = raw.trim().toUpperCase();
+    return /^\d{2}[A-Z]{5}\d{4}[A-Z][0-9A-Z]Z[0-9A-Z]$/.test(v) ? v : fail(ctx, 'VAL-39');
+  });
+
+// FLD-17 Agent code: CFG-106 length; letters, digits, hyphen, slash; uppercased.
+export const agentCode = () =>
+  z.string({ invalid_type_error: 'VAL-18' }).transform((raw, ctx) => {
+    const v = raw.trim().toUpperCase();
+    const { min, max } = cfgRange('CFG-106');
+    return v.length >= min && v.length <= max && /^[A-Z0-9/-]+$/.test(v) ? v : fail(ctx, 'VAL-18');
+  });

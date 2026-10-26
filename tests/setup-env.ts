@@ -1,5 +1,9 @@
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 // Loaded before every test file (vitest setupFiles): a complete, valid environment for the app.
 Object.assign(process.env, {
+  // Uploaded test files go to a throwaway folder, never into the project.
+  FILE_STORAGE_DIR: join(tmpdir(), 'bimayantra-test-files'),
   NODE_ENV: 'test',
   MONGO_URI: 'mongodb://127.0.0.1:1/unused', // replaced by the in-memory replica set in helpers.ts
   REDIS_CACHE_URL: 'redis://mock:6379',

@@ -18,6 +18,14 @@ export const CAPABILITIES = {
   'customers.deactivate': ['ADV'],
   /** Show the full PAN or Aadhaar (GR-36; assistants see masked only). */
   'customers.revealIdentity': ['ADV'],
+  /** Own advisor profile: personal, contact, professional and business sections (P-05). */
+  'profile.manage': ['ADV'],
+  /** Review advisor KYC: verify or reject (P-06). Advisor's own data, not client data: no support grant needed. */
+  'kyc.review': ['STF', 'ADM'],
+  /** The advisor's insurers and agent codes (P-07). */
+  'insurers.manage': ['ADV'],
+  /** See accounts flagged because they share an insurer and agent code (P-07, DEC-09). */
+  'agentCodes.review': ['STF', 'ADM'],
   /** Manage assistant users (P-53). */
   'assistants.manage': ['ADV'],
   /** Manage SkyUp users (P-48). */

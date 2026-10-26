@@ -53,6 +53,19 @@ const schema = z.object({
 
   // Test tools: SMS inbox, test clock, configuration overrides (NFR-13). Never on in production.
   DEV_TOOLS: bool.default('false'),
+  // Private file storage (KYC documents, photos, logos, PDFs).
+  //   local      = files on this server's disk; development only.
+  //   cloudinary = Cloudinary "authenticated" (private) raw assets. Decision Q29: Cloudinary for all files,
+  //                pending confirmation that storage is in India and legal review (IRDAI CS Guidelines 2023).
+  FILE_STORAGE: z.enum(['local', 'cloudinary']).default('local'),
+  FILE_STORAGE_DIR: z.string().default('./storage'),
+  CLOUDINARY_CLOUD_NAME: z.string().optional(),
+  CLOUDINARY_API_KEY: z.string().optional(),
+  CLOUDINARY_API_SECRET: z.string().optional(),
+  /** Folder inside the Cloudinary account; keep development and production apart. */
+  CLOUDINARY_FOLDER: z.string().regex(/^[a-z0-9_/-]+$/).default('bimayantra-dev'),
+  /** Regional API host if Cloudinary assigns one (for example https://api-ap.cloudinary.com). */
+  CLOUDINARY_UPLOAD_PREFIX: z.string().url().optional(),
 
   TERMS_VERSION: z.string().default('2026-10-v1'),
   SUPPORT_EMAIL: z.string().email().default('support@bimayantra.in'),
@@ -75,9 +88,14 @@ const fatal = (msg: string) => {
 };
 if (e.JWT_ACCESS_SECRET === e.JWT_REFRESH_SECRET) fatal('JWT_ACCESS_SECRET and JWT_REFRESH_SECRET must be different.');
 if (e.PII_ENCRYPTION_KEY === e.PII_HASH_KEY) fatal('PII_ENCRYPTION_KEY and PII_HASH_KEY must be different.');
+if (e.FILE_STORAGE === 'cloudinary' && !(e.CLOUDINARY_CLOUD_NAME && e.CLOUDINARY_API_KEY && e.CLOUDINARY_API_SECRET)) {
+  fatal('FILE_STORAGE=cloudinary needs CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY and CLOUDINARY_API_SECRET.');
+}
 if (e.NODE_ENV === 'production') {
   if (e.SMS_PROVIDER === 'dev') fatal('SMS_PROVIDER=dev is not allowed in production.');
   if (e.DEV_TOOLS) fatal('DEV_TOOLS must be false in production.');
+  if (e.FILE_STORAGE === 'local') fatal('FILE_STORAGE=local keeps files on one server disk and is not allowed in production. Use FILE_STORAGE=cloudinary.');
+  if (e.CLOUDINARY_FOLDER.endsWith('-dev')) fatal('CLOUDINARY_FOLDER must be a production folder (not "-dev") in production.');
   if (!e.COOKIE_SECURE) fatal('COOKIE_SECURE must be true in production.');
 }
 
