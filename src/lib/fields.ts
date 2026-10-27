@@ -214,6 +214,8 @@ export const lists = {
   lostReasons: () => cfgList('CFG-33'),
   relationships: () => cfgList('CFG-36'),
   insuranceTypes: () => cfgList('CFG-115'),
+  documentTypes: () => cfgList('CFG-171'),
+  photoSlots: () => cfgList('CFG-155'),
   leadSources: () => cfgList('CFG-133'),
 };
 
@@ -273,4 +275,39 @@ export const agentCode = () =>
     const v = raw.trim().toUpperCase();
     const { min, max } = cfgRange('CFG-106');
     return v.length >= min && v.length <= max && /^[A-Z0-9/-]+$/.test(v) ? v : fail(ctx, 'VAL-18');
+  });
+
+// FLD-08 Amount in rupees: digits with optional Indian commas, up to 2 decimals; > 0 (or >= 0 where allowed); <= CFG-16.
+export const rupees = (opts: { allowZero?: boolean } = {}) =>
+  z.union([z.number(), z.string()], { invalid_type_error: 'VAL-09' }).transform((raw, ctx) => {
+    const s = typeof raw === 'number' ? String(raw) : raw.trim().replace(/^₹\s*/, '');
+    if (!/^(\d{1,3}(,\d{2,3})*|\d+)(\.\d{1,2})?$/.test(s)) return fail(ctx, 'VAL-09');
+    const n = Number(s.replace(/,/g, ''));
+    const min = opts.allowZero ? 0 : 0.01;
+    const max = cfgNum('CFG-16');
+    return n >= min && n <= max ? n : fail(ctx, 'VAL-10', { min: opts.allowZero ? 0 : 1, max });
+  });
+
+// FLD-19 Policy number: CFG-107 length; letters, digits, hyphen and slash; uppercased.
+export const policyNumber = () =>
+  z.string({ invalid_type_error: 'VAL-20' }).transform((raw, ctx) => {
+    const v = raw.trim().toUpperCase();
+    const { min, max } = cfgRange('CFG-107');
+    return v.length >= min && v.length <= max && /^[A-Z0-9/-]+$/.test(v) ? v : fail(ctx, 'VAL-20');
+  });
+
+// FLD-37 Document label: CFG-172 characters after trimming; letters, digits, spaces and - _ . , ( ) /.
+export const documentLabel = () =>
+  z.string({ invalid_type_error: 'VAL-42' }).transform((raw, ctx) => {
+    const v = raw.trim().replace(/\s+/g, ' ');
+    const { min, max } = cfgRange('CFG-172');
+    return v.length >= min && v.length <= max && /^[\p{L}\p{N} _.,()\/-]+$/u.test(v) ? v : fail(ctx, 'VAL-42');
+  });
+
+// FLD-35 Vehicle registration: uppercased, spaces and hyphens removed. Either 2 letters, 1 or 2 digits,
+// 0 to 3 letters and 4 digits (KA01AB1234), or the Bharat series: 2 digits, BH, 4 digits, 1 or 2 letters (22BH1234AA).
+export const vehicleRegistration = () =>
+  z.string({ invalid_type_error: 'VAL-40' }).transform((raw, ctx) => {
+    const v = raw.toUpperCase().replace(/[\s-]+/g, '');
+    return /^[A-Z]{2}\d{1,2}[A-Z]{0,3}\d{4}$/.test(v) || /^\d{2}BH\d{4}[A-Z]{1,2}$/.test(v) ? v : fail(ctx, 'VAL-40');
   });

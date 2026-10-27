@@ -16,7 +16,7 @@ export interface CfgRange { min: number; max: number }
 export type CfgValue = number | boolean | string | string[] | number[] | CfgRange | Record<string, number>;
 interface CfgDef {
   label: string;
-  unit?: 'digits' | 'seconds' | 'minutes' | 'hours' | 'days' | 'working days' | 'days before expiry' | 'characters' | 'years' | 'count' | 'per hour' | 'per minute' | 'MB' | '%';
+  unit?: 'digits' | 'seconds' | 'minutes' | 'hours' | 'days' | 'working days' | 'days before expiry' | 'characters' | 'years' | 'count' | 'per hour' | 'per minute' | 'MB' | '%' | 'rupees';
   value: CfgValue;
   change: 'ADM' | 'Release';
   /** Smallest and largest allowed values for numbers, used when an override is set. */
@@ -57,6 +57,14 @@ const DEFS = {
   'CFG-79': { label: 'Grace after subscription end', unit: 'days', value: 7, change: 'ADM', range: [0, 90] },
   'CFG-83': { label: 'Extra OTP before approve, publish, plan change, configuration change', value: true, change: 'Release' },
   'CFG-99': { label: 'Requests per user per minute', unit: 'per minute', value: 120, change: 'ADM', range: [10, 100000] },
+  'CFG-16': { label: 'Largest amount', unit: 'rupees', value: 999999999.99, change: 'Release' },
+  'CFG-107': { label: 'Policy number length', unit: 'characters', value: { min: 3, max: 40 }, change: 'Release' },
+  'CFG-154': { label: 'Fewest photos per vehicle', unit: 'count', value: 4, change: 'ADM', range: [1, 20] },
+  'CFG-155': { label: 'Vehicle photo slots', value: ['Front', 'Rear', 'Left', 'Right', 'Odometer', 'Chassis number'], change: 'ADM' },
+  'CFG-156': { label: 'Vehicles per client', unit: 'count', value: 10, change: 'ADM', range: [1, 100] },
+  'CFG-171': { label: 'Document types', value: ['Aadhaar', 'PAN', 'Old policy', 'Vehicle RC', 'Vehicle photo', 'Medical report', 'Address proof', 'Income proof', 'Photo', 'Other'], change: 'ADM' },
+  'CFG-172': { label: 'Document label length', unit: 'characters', value: { min: 2, max: 100 }, change: 'Release' },
+  'CFG-181': { label: 'Earliest vehicle year of manufacture', unit: 'years', value: 1950, change: 'ADM' },
   'CFG-26': { label: 'Allowed file types', value: ['PDF', 'JPG', 'JPEG', 'PNG'], change: 'ADM' },
   'CFG-27': { label: 'Largest file', unit: 'MB', value: 10, change: 'ADM', range: [1, 50] },
   'CFG-28': { label: 'Files per upload', unit: 'count', value: 5, change: 'ADM', range: [1, 20] },

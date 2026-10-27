@@ -59,6 +59,9 @@ const schema = z.object({
   //                pending confirmation that storage is in India and legal review (IRDAI CS Guidelines 2023).
   FILE_STORAGE: z.enum(['local', 'cloudinary']).default('local'),
   FILE_STORAGE_DIR: z.string().default('./storage'),
+  /** P-18 automatic reading of Aadhaar, PAN and old policies. The BPD names Google Document AI [TO CONFIRM];
+   *  until confirmed, none = the verify screen opens empty for manual entry (the BPD's own DOC-10 fallback). */
+  DOCUMENT_READER: z.enum(['none']).default('none'),
   CLOUDINARY_CLOUD_NAME: z.string().optional(),
   CLOUDINARY_API_KEY: z.string().optional(),
   CLOUDINARY_API_SECRET: z.string().optional(),

@@ -7,6 +7,7 @@ import { validate } from '../../middleware/validate.js';
 import { agentCode, confirmations, declaration, optional, recordId, required, todayOrLater, version } from '../../lib/fields.js';
 import { sendData, sendDone } from '../../lib/response.js';
 import * as svc from './myInsurers.service.js';
+import { Insurer } from './insurer.model.js';
 
 const labels = { insurerId: 'Insurer', agentCode: 'Agent code', validUntil: 'Code valid until', appointmentLetterFileId: 'Appointment letter', declaration: 'Declaration', version: 'Version' };
 const idParam = z.object({ id: z.string().regex(/^map_[a-f0-9]{28}$/) });
@@ -42,6 +43,20 @@ export function myInsurersRoutes() {
     sendData(res, await svc.deactivate(req.auth!, String(req.params.id), req.body, req)));
   r.post('/:id/activate', writable, validate({ params: idParam, body: z.object({ version: required(version()) }).strict() }, labels), async (req, res) =>
     sendData(res, await svc.activate(req.auth!, String(req.params.id), req.body, req)));
+  return r;
+}
+
+/**
+ * The insurer catalogue as a pick list (name and status only), for forms that name an insurer outside the
+ * advisor's own list, such as an old policy (P-18). ACTIVE first. Full catalogue screens: P-20 (Module 8).
+ */
+export function insurerCatalogueRoutes() {
+  const r = Router();
+  r.use(authenticate, allow('documents.work'));
+  r.get('/', async (_req, res) => {
+    const list = await Insurer.find({ status: { $in: ['ACTIVE', 'INACTIVE'] } }, { name: 1, category: 1, status: 1 }).sort({ status: 1, name: 1 }).lean();
+    sendData(res, list.map((i) => ({ id: i._id, name: i.name, category: i.category, status: i.status })));
+  });
   return r;
 }
 

@@ -26,6 +26,10 @@ export const CAPABILITIES = {
   'insurers.manage': ['ADV'],
   /** See accounts flagged because they share an insurer and agent code (P-07, DEC-09). */
   'agentCodes.review': ['STF', 'ADM'],
+  /** Upload, view and confirm customer documents (P-18). */
+  'documents.work': ['ADV', 'AST'],
+  /** Change a document's label (P-18 step 8: ADV only). */
+  'documents.relabel': ['ADV'],
   /** Manage assistant users (P-53). */
   'assistants.manage': ['ADV'],
   /** Manage SkyUp users (P-48). */

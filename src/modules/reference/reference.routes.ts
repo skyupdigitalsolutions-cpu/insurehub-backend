@@ -17,6 +17,11 @@ export function referenceRoutes() {
     lostReasons: cfgList('CFG-33'),
     relationships: cfgList('CFG-36'),
     insuranceTypes: cfgList('CFG-115'),
+    // P-18: all document types (CFG-171); which need Verify and which come from the vehicle screen (P-54)
+    documentTypes: cfgList('CFG-171'),
+    verifyDocumentTypes: ['Aadhaar', 'PAN', 'Old policy'],
+    vehicleDocumentTypes: ['Vehicle RC', 'Vehicle photo'],
+    vehiclePhotoSlots: cfgList('CFG-155'),
     pipelineNames: cfgList('CFG-169'),
     leadStatuses: LEAD_STATUSES.map((s) => ({ code: s, label: STATUS_LABEL[s] })),
     contactOutcomes: CONTACT_OUTCOMES.map((c) => ({ code: c, label: OUTCOME_LABEL[c] })),

@@ -7,6 +7,7 @@ import { cfgNum } from '../../config/cfg.js';
 import { sendData } from '../../lib/response.js';
 import { AppError } from '../../lib/errors.js';
 import { FILE_PURPOSES } from './file.model.js';
+import type { Capability } from '../rbac/capabilities.js';
 import * as files from './files.service.js';
 
 /**
@@ -14,11 +15,20 @@ import * as files from './files.service.js';
  * GET  /v1/files/:id               the file, only to those allowed to open it.
  * One file per request, so CFG-28 (files per upload) is a screen rule: the screen sends them one by one.
  */
+const UPLOAD_CAPABILITY = {
+  PROFILE_PHOTO: 'profile.manage', BUSINESS_LOGO: 'profile.manage', KYC_PAN: 'profile.manage', KYC_LICENCE: 'profile.manage',
+  APPOINTMENT_LETTER: 'insurers.manage',
+  CUSTOMER_DOCUMENT: 'documents.work', // P-18: advisors AND assistants
+} as const satisfies Record<(typeof FILE_PURPOSES)[number], Capability>;
+
 export function fileRoutes() {
   const r = Router();
   r.use(authenticate);
   const maxBytes = () => Math.max(cfgNum('CFG-27'), cfgNum('CFG-127')) * 1024 * 1024 + 1;
-  r.post('/', allow('profile.manage'), writable, validate({ query: z.object({ purpose: z.enum(FILE_PURPOSES) }) }),
+  r.post('/', validate({ query: z.object({ purpose: z.enum(FILE_PURPOSES) }) }),
+    // Who may upload depends on what the file is for: the capability of the screen it belongs to.
+    (req, res, next) => allow(UPLOAD_CAPABILITY[String(req.query.purpose) as (typeof FILE_PURPOSES)[number]])(req, res, next),
+    writable,
     (req, res, next) => express.raw({ type: () => true, limit: maxBytes() })(req, res, (e?: unknown) => {
       if ((e as { type?: string } | undefined)?.type === 'entity.too.large') return next(AppError.field('file', 'VAL-24', { 'size limit': cfgNum('CFG-27') }));
       next(e);

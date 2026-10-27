@@ -11,7 +11,7 @@ const humanise = (key: string) => {
   return s.charAt(0).toUpperCase() + s.slice(1);
 };
 
-function toField(issue: ZodIssue, labels: Record<string, string>) {
+export function toField(issue: ZodIssue, labels: Record<string, string>) {
   const field = issue.path.join('.') || '(request)';
   const label = labels[field] ?? labels[String(issue.path[0])] ?? humanise(String(issue.path.at(-1) ?? 'value'));
   const params = { 'Field label': label, ...((issue as { params?: Record<string, string | number> }).params ?? {}) };

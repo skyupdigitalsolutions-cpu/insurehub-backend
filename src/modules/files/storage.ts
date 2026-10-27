@@ -62,9 +62,13 @@ export const cloudinaryStorage: Storage = {
   name: 'cloudinary',
   async put(key, bytes) {
     const id = publicId(key);
+    // asset_folder: accounts with Cloudinary "dynamic folders" (the default for newer accounts) show an asset
+    // in the Media Library folder named here, NOT the path inside its public_id. Without it, every file
+    // appears at Home instead of under CLOUDINARY_FOLDER. Accounts with fixed folders ignore it.
+    const folder = id.slice(0, id.lastIndexOf('/'));
     const result = await new Promise<{ existing?: boolean; public_id: string; bytes: number }>((ok, fail) => {
       const up = client().uploader.upload_stream(
-        { public_id: id, resource_type: 'raw', type: 'authenticated', overwrite: false, unique_filename: false, use_filename: false, invalidate: false },
+        { public_id: id, asset_folder: folder, resource_type: 'raw', type: 'authenticated', overwrite: false, unique_filename: false, use_filename: false, invalidate: false },
         (error, res) => (error || !res ? fail(error ?? new Error('Cloudinary returned no result')) : ok(res as never)),
       );
       Readable.from(bytes).pipe(up);

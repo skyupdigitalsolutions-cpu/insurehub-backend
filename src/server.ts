@@ -7,6 +7,10 @@ import { disconnectRedis, redisCache } from './lib/redis.js';
 
 async function main() {
   await connectMongo();
+  // Say where uploaded files go, so a missing FILE_STORAGE setting is obvious at start-up.
+  logger.info(env.FILE_STORAGE === 'cloudinary'
+    ? `File storage: Cloudinary (cloud ${env.CLOUDINARY_CLOUD_NAME}, folder ${env.CLOUDINARY_FOLDER})`
+    : `File storage: local disk (${env.FILE_STORAGE_DIR}). Set FILE_STORAGE=cloudinary in .env to use Cloudinary.`);
   // Importing the app registers every model; then compare the database's indexes with the code.
   const stale = await findStaleIndexes();
   if (stale.length) {

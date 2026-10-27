@@ -39,7 +39,7 @@ describe('Cloudinary storage driver', () => {
     const bytes = Buffer.from('%PDF-1.4 test');
     await cloudinaryStorage.put('acc_x/fil_y', bytes);
     expect(uploads).toHaveLength(1);
-    expect(uploads[0]!.options).toMatchObject({ public_id: 'bimayantra-dev/acc_x/fil_y', resource_type: 'raw', type: 'authenticated', overwrite: false });
+    expect(uploads[0]!.options).toMatchObject({ public_id: 'bimayantra-dev/acc_x/fil_y', asset_folder: 'bimayantra-dev/acc_x', resource_type: 'raw', type: 'authenticated', overwrite: false });
     expect(uploads[0]!.bytes.equals(bytes)).toBe(true);
   });
 
