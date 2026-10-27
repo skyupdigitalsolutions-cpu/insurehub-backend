@@ -1,6 +1,6 @@
 import type { Request } from 'express';
 import { z } from 'zod';
-import { cfgList } from '../../config/cfg.js';
+import { cfgList, cfgNum } from '../../config/cfg.js';
 import { clock } from '../../lib/clock.js';
 import { decryptField, encryptField, lookupHash } from '../../lib/crypto.js';
 import { AppError } from '../../lib/errors.js';
@@ -18,7 +18,8 @@ import { assertOwnFile, open as openFile, view as fileView } from '../files/file
 import { Insurer } from '../insurers/insurer.model.js';
 import type { AuthContext } from '../rbac/capabilities.js';
 import { CustomerDocument, DocumentLabel, VEHICLE_TYPES, VERIFY_TYPES, type DocumentDoc, type LabelDoc } from './document.model.js';
-import { readDocument } from './reader.js';
+import { readDocument, readerEnabled } from './reader.js';
+import { logger } from '../../lib/logger.js';
 
 export interface UploadBody { customerId?: string; personKey?: string; type?: string; name?: string | null; fileId: string }
 
@@ -80,11 +81,8 @@ export async function upload(ctx: AuthContext, b: UploadBody, req: Request, vehi
   await assertOwnFile(ctx, b.fileId, 'CUSTOMER_DOCUMENT', 'fileId');
   const file = await StoredFile.findById(b.fileId).lean<FileDoc>();
 
-  // Read first, outside any transaction (slow, may fail): a failed read only means manual entry (DOC-10).
-  let read: Record<string, unknown> | null = null;
-  if (isVerify(type)) {
-    try { read = await readDocument(type, (await openFile(ctx, b.fileId, req)).bytes); } catch { read = null; }
-  }
+  // GR-26: the document is saved first; reading runs afterwards in the background (startReading below).
+  const reading = isVerify(type) && readerEnabled();
 
   const seriesKey = vehicle ? `V:${vehicle.vehicleId}|${type}${vehicle.slot ? `|${vehicle.slot}` : ''}` : seriesKeyOf(b.personKey, type, b.name);
   for (let attempt = 0; ; attempt++) {
@@ -94,23 +92,59 @@ export async function upload(ctx: AuthContext, b: UploadBody, req: Request, vehi
       const doc = await new CustomerDocument({
         accountId: ctx.accountId, customerId: c._id, personKey: b.personKey, type, name: type === 'Other' ? b.name : null, seriesKey, version,
         fileId: b.fileId, originalName: file!.name, label: file!.name, labelKey: nameKey(file!.name),
-        status: isVerify(type) ? 'UNCONFIRMED' : 'CONFIRMED', readValuesEnc: read ? encryptField(JSON.stringify(read)) : null,
+        status: isVerify(type) ? 'UNCONFIRMED' : 'CONFIRMED', readStatus: reading ? 'PENDING' : 'OFF', readStartedAt: reading ? clock.now() : null,
         vehicleId: vehicle?.vehicleId ?? null, slot: vehicle?.slot ?? null, uploadedBy: ctx.userId,
       }).save();
       await audit({ entity: 'document', entityId: doc._id, action: 'DOCUMENT_UPLOADED', after: { customerId: c._id, type, version, person: b.personKey } }, { req });
+      if (reading) startReading(ctx, doc._id, b.fileId, type, req);
       const d = doc.toObject() as DocumentDoc;
       return {
         document: versionView(d, fileView(file!)), personName: person,
         params: { 'Document type': type === 'Other' && b.name ? b.name : type, n: version },
-        verify: isVerify(type)
-          ? { values: read ?? {}, messageId: (read ? 'DOC-04' : 'DOC-10') as MessageId, message: msg(read ? 'DOC-04' : 'DOC-10') }
-          : null,
+        verify: !isVerify(type) ? null
+          : reading ? { reading: true, values: {} } // the check screen asks again until the reading is done
+          : { reading: false, values: {}, messageId: 'DOC-10' as MessageId, message: msg('DOC-10') },
       };
     } catch (e) {
       if (isDuplicateKey(e, 'one_version_number_per_series') && attempt < 4) continue; // a parallel upload took this number
       throw e;
     }
   }
+}
+
+// ── Background reading (P-18 step 5, GR-26) ───────────────────────────────────
+
+/**
+ * Read the document after it is saved. Never awaited by the upload. Writes only the read values and the read
+ * status, and only while the document is still PENDING: it can never change a confirmed document, and a
+ * failure or the CFG-38 time limit just means manual entry (DOC-10). Logs never contain the text read.
+ */
+export function startReading(ctx: AuthContext, documentId: string, fileId: string, type: string, req: Request) {
+  const limit = cfgNum('CFG-38') * 60_000;
+  void (async () => {
+    try {
+      const { file, bytes } = await openFile(ctx, fileId, req);
+      const timeout = new Promise<never>((_, fail) => setTimeout(() => fail(new Error('OCR time limit (CFG-38) reached')), limit).unref());
+      const read = await Promise.race([readDocument(type, bytes, file.mime), timeout]);
+      const values: Record<string, unknown> = { ...(read?.values ?? {}) };
+      if (type === 'Old policy' && read?.text) { // the insurer: a catalogue name printed on the policy
+        const text = read.text.toLowerCase();
+        const hit = (await Insurer.find({}, { name: 1 }).lean<Array<{ _id: string; name: string }>>()).find((i) => text.includes(i.name.toLowerCase()));
+        if (hit) values.insurerId = hit._id;
+      }
+      await CustomerDocument.updateOne({ _id: documentId, readStatus: 'PENDING' }, { $set: { readStatus: 'DONE', readValuesEnc: encryptField(JSON.stringify(values)) } });
+    } catch (e) {
+      logger.warn({ documentId, type, reason: (e as Error).message }, 'Document reading failed: manual entry (DOC-10)');
+      await CustomerDocument.updateOne({ _id: documentId, readStatus: 'PENDING' }, { $set: { readStatus: 'FAILED' } }).catch(() => undefined);
+    }
+  })();
+}
+
+/** A reading still PENDING after CFG-38 (for example the server restarted) counts as failed. */
+function readState(d: Pick<DocumentDoc, 'readStatus' | 'readStartedAt'>): 'OFF' | 'PENDING' | 'DONE' | 'FAILED' {
+  const s = (d.readStatus ?? 'OFF') as 'OFF' | 'PENDING' | 'DONE' | 'FAILED';
+  if (s === 'PENDING' && d.readStartedAt && clock.now().getTime() - new Date(d.readStartedAt).getTime() > cfgNum('CFG-38') * 60_000) return 'FAILED';
+  return s;
 }
 
 // ── Verify and Confirm (P-18 steps 5–6) ───────────────────────────────────────
@@ -220,7 +254,13 @@ export async function getDocument(ctx: AuthContext, id: string) {
     ...versionView(d, file ? fileView(file) : null),
     readValues: decode(d.readValuesEnc), confirmedValues: decode(d.confirmedValuesEnc),
     history: [{ event: 'UPLOADED', name: d.originalName, by: d.uploadedBy, at: d.createdAt }, ...labels.map((l) => ({ event: 'LABEL_CHANGED', from: l.from, to: l.to, by: l.by, at: l.createdAt }))],
-    ...(d.status === 'UNCONFIRMED' ? { messageId: d.readValuesEnc ? 'DOC-04' : 'DOC-10', message: msg(d.readValuesEnc ? 'DOC-04' : 'DOC-10') } : {}),
+    readStatus: readState(d),
+    ...(d.status === 'UNCONFIRMED' && readState(d) !== 'PENDING'
+      ? (() => {
+          const found = Object.keys(decode(d.readValuesEnc) ?? {}).length > 0;
+          return { messageId: found ? 'DOC-04' : 'DOC-10', message: msg(found ? 'DOC-04' : 'DOC-10') };
+        })()
+      : {}),
   };
 }
 

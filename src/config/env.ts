@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { z } from 'zod';
 
 const csv = z
@@ -59,9 +60,16 @@ const schema = z.object({
   //                pending confirmation that storage is in India and legal review (IRDAI CS Guidelines 2023).
   FILE_STORAGE: z.enum(['local', 'cloudinary']).default('local'),
   FILE_STORAGE_DIR: z.string().default('./storage'),
-  /** P-18 automatic reading of Aadhaar, PAN and old policies. The BPD names Google Document AI [TO CONFIRM];
-   *  until confirmed, none = the verify screen opens empty for manual entry (the BPD's own DOC-10 fallback). */
-  DOCUMENT_READER: z.enum(['none']).default('none'),
+  /** P-18 automatic reading of Aadhaar, PAN and old policies.
+   *  none   = the check screen opens empty for manual entry (the BPD's DOC-10 fallback).
+   *  google = Google Document AI, plain OCR processor (not a generative-AI extractor: P-18 forbids sending PAN and
+   *           Aadhaar in AI requests); the fields are found by our own code (parsers.ts). Use location asia-south1. */
+  DOCUMENT_READER: z.enum(['none', 'google']).default('none'),
+  DOCUMENT_AI_PROJECT_ID: z.string().optional(),
+  DOCUMENT_AI_LOCATION: z.string().regex(/^[a-z0-9-]+$/).default('asia-south1'),
+  DOCUMENT_AI_PROCESSOR_ID: z.string().regex(/^[a-z0-9]+$/).optional(),
+  /** Path to the service-account key file. Without it, Google's standard GOOGLE_APPLICATION_CREDENTIALS is used. */
+  DOCUMENT_AI_KEY_FILE: z.string().optional(),
   CLOUDINARY_CLOUD_NAME: z.string().optional(),
   CLOUDINARY_API_KEY: z.string().optional(),
   CLOUDINARY_API_SECRET: z.string().optional(),
@@ -91,6 +99,13 @@ const fatal = (msg: string) => {
 };
 if (e.JWT_ACCESS_SECRET === e.JWT_REFRESH_SECRET) fatal('JWT_ACCESS_SECRET and JWT_REFRESH_SECRET must be different.');
 if (e.PII_ENCRYPTION_KEY === e.PII_HASH_KEY) fatal('PII_ENCRYPTION_KEY and PII_HASH_KEY must be different.');
+if (e.DOCUMENT_READER === 'google') {
+  if (!(e.DOCUMENT_AI_PROJECT_ID && e.DOCUMENT_AI_PROCESSOR_ID)) fatal('DOCUMENT_READER=google needs DOCUMENT_AI_PROJECT_ID and DOCUMENT_AI_PROCESSOR_ID.');
+  // Without credentials Google's library fails in a background promise at the first upload. Refuse to start instead.
+  const keyFile = e.DOCUMENT_AI_KEY_FILE ?? process.env.GOOGLE_APPLICATION_CREDENTIALS;
+  if (!keyFile) fatal('DOCUMENT_READER=google needs DOCUMENT_AI_KEY_FILE: the path to the Document AI service-account key (.json).');
+  else if (!existsSync(keyFile)) fatal(`DOCUMENT_AI_KEY_FILE not found: ${keyFile}`);
+}
 if (e.FILE_STORAGE === 'cloudinary' && !(e.CLOUDINARY_CLOUD_NAME && e.CLOUDINARY_API_KEY && e.CLOUDINARY_API_SECRET)) {
   fatal('FILE_STORAGE=cloudinary needs CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY and CLOUDINARY_API_SECRET.');
 }

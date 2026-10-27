@@ -30,6 +30,8 @@ export const CAPABILITIES = {
   'documents.work': ['ADV', 'AST'],
   /** Change a document's label (P-18 step 8: ADV only). */
   'documents.relabel': ['ADV'],
+  /** A customer's vehicles: add, new photo/RC versions, mark sold (P-54). */
+  'vehicles.work': ['ADV', 'AST'],
   /** Manage assistant users (P-53). */
   'assistants.manage': ['ADV'],
   /** Manage SkyUp users (P-48). */

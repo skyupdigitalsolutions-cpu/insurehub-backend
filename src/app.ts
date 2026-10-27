@@ -19,6 +19,7 @@ import { fileRoutes } from './modules/files/files.routes.js';
 import { kycReviewRoutes, kycRoutes } from './modules/kyc/kyc.routes.js';
 import { agentCodeFlagRoutes, insurerCatalogueRoutes, myInsurersRoutes } from './modules/insurers/myInsurers.routes.js';
 import { customerDocumentRoutes, documentRoutes } from './modules/documents/documents.routes.js';
+import { customerVehicleRoutes, vehicleRoutes } from './modules/vehicles/vehicles.routes.js';
 import { devRoutes } from './modules/dev/dev.routes.js';
 
 /**
@@ -66,6 +67,8 @@ export function createApp() {
   api.use('/leads', leadRoutes());
   api.use('/customers/:customerId/documents', customerDocumentRoutes()); // before /customers
   api.use('/documents', documentRoutes());
+  api.use('/customers/:customerId/vehicles', customerVehicleRoutes()); // before /customers
+  api.use('/vehicles', vehicleRoutes());
   api.use('/customers', customerRoutes());
   api.use('/audit', auditRoutes());
   api.use('/profile', profileRoutes());

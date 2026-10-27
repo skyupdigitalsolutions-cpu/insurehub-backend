@@ -16,9 +16,11 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "db:indexes": "tsx --env-file=.env src/scripts/sync-indexes.ts",
-    "storage:check": "tsx --env-file=.env src/scripts/storage-check.ts"
+    "storage:check": "tsx --env-file=.env src/scripts/storage-check.ts",
+    "ocr:check": "tsx --env-file=.env src/scripts/ocr-check.ts"
   },
   "dependencies": {
+    "@google-cloud/documentai": "10.2.0",
     "cloudinary": "2.11.0",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.6",

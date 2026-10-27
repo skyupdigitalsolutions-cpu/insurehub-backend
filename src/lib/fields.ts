@@ -234,10 +234,11 @@ export const todayOrLater = () =>
   });
 
 // FLD-10 Whole number within the field's minimum and maximum.
-export const wholeNumber = (min: number, max: () => number) =>
+export const wholeNumber = (minimum: number | (() => number), max: () => number) =>
   z.union([z.number(), z.string()], { invalid_type_error: 'VAL-12' }).transform((raw, ctx) => {
     const v = typeof raw === 'number' ? raw : raw.trim();
     const n = typeof v === 'number' ? v : /^\d+$/.test(v) ? Number(v) : NaN;
+    const min = typeof minimum === 'function' ? minimum() : minimum; // read at request time (CFG may change)
     return Number.isInteger(n) && n >= min && n <= max() ? n : fail(ctx, 'VAL-12', { min, max: max() });
   });
 

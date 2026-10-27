@@ -26,6 +26,9 @@ const documentSchema = new Schema(
     label: { type: String, required: true },
     labelKey: { type: String, required: true }, // lowercased, for DOC-06
     status: { type: String, enum: ['UNCONFIRMED', 'CONFIRMED'], required: true },
+    /** P-18 step 5, GR-26: reading runs in the background after the save. OFF when no reader is set up. */
+    readStatus: { type: String, enum: ['OFF', 'PENDING', 'DONE', 'FAILED'], default: 'OFF' },
+    readStartedAt: { type: Date, default: null },
     readValuesEnc: { type: String, default: null, select: false }, // what the reader returned (encrypted JSON)
     confirmedValuesEnc: { type: String, default: null, select: false }, // what the user confirmed (encrypted JSON)
     confirmedAt: { type: Date, default: null },

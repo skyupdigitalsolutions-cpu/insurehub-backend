@@ -35,6 +35,11 @@ async function main() {
     });
     setTimeout(() => process.exit(1), 15_000).unref();
   };
+  // A rejected promise nobody awaited (for example inside a provider library during a background job, GR-26)
+  // must not stop the API for every user: log it with its reason and keep serving.
+  process.on('unhandledRejection', (reason) => {
+    logger.error({ err: reason instanceof Error ? { message: reason.message, stack: reason.stack } : reason }, 'Unhandled promise rejection (kept running)');
+  });
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
 }
