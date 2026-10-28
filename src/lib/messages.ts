@@ -125,6 +125,10 @@ export const MESSAGES = {
 
   // ── Dashboard and tasks (Section 6) ──
   'DSH-01': 'Could not load this section. Select Retry.',
+  'DSH-10': 'Your profile is {percent}% complete.',
+  'DSH-11': 'Follow-up with {name} is due at {time}.',
+  'DSH-21': 'KYC from {advisor name} is waiting for review.',
+  'DSH-23': 'Task marked as done.',
   'DSH-24': 'Choose a time later than now.',
 
   // ── Leads (Section 7) ──

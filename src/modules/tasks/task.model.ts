@@ -3,7 +3,7 @@ import { newId } from '../../lib/ids.js';
 
 /**
  * Task (P-11): OPEN → DONE | CANCELLED; DONE → OPEN. Leads keep a single open follow-up task
- * (P-12, P-13, AC-P11-3). The Tasks page, reminders (SYS-07) and general tasks arrive with Section 6.
+ * (P-12, P-13, AC-P11-3). General tasks, the Tasks page and DSH-11 reminders: Module 7 (tasks.service, sweep).
  */
 const taskSchema = new Schema(
   {
@@ -17,6 +17,9 @@ const taskSchema = new Schema(
     linkedId: { type: String, default: null },
     notes: { type: String, default: null },
     createdBy: { type: String, default: null },
+    doneAt: { type: Date, default: null },
+    /** The due time a DSH-11 reminder was sent for; a changed due time allows one new reminder (P-11). */
+    remindedFor: { type: Date, default: null },
     version: { type: Number, default: 1 },
   },
   { timestamps: true, versionKey: false },

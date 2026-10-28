@@ -312,3 +312,17 @@ export const vehicleRegistration = () =>
     const v = raw.toUpperCase().replace(/[\s-]+/g, '');
     return /^[A-Z]{2}\d{1,2}[A-Z]{0,3}\d{4}$/.test(v) || /^\d{2}BH\d{4}[A-Z]{1,2}$/.test(v) ? v : fail(ctx, 'VAL-40');
   });
+
+// FLD-27 Time of day: "10:30 AM" (shown as hh:mm AM/PM); 24-hour "14:30" is accepted too. Returns "HH:mm" (24h).
+export const timeOfDay = () =>
+  z.string({ invalid_type_error: 'VAL-32' }).transform((raw, ctx) => {
+    const v = raw.trim().toUpperCase().replace(/\s+/g, ' ');
+    let m = /^(\d{1,2}):([0-5]\d) ?(AM|PM)$/.exec(v);
+    if (m) {
+      const h = Number(m[1]);
+      if (h < 1 || h > 12) return fail(ctx, 'VAL-32');
+      return `${String((h % 12) + (m[3] === 'PM' ? 12 : 0)).padStart(2, '0')}:${m[2]}`;
+    }
+    m = /^([01]?\d|2[0-3]):([0-5]\d)$/.exec(v);
+    return m ? `${m[1]!.padStart(2, '0')}:${m[2]}` : fail(ctx, 'VAL-32');
+  });

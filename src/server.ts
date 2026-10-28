@@ -3,6 +3,7 @@ import { env } from './config/env.js';
 import { loadConfigOverrides, startConfigRefresh, stopConfigRefresh } from './config/cfg.js';
 import { logger } from './lib/logger.js';
 import { connectMongo, disconnectMongo, findStaleIndexes } from './lib/mongo.js';
+import { startSweep, stopSweep } from './modules/notifications/sweep.js';
 import { disconnectRedis, redisCache } from './lib/redis.js';
 
 async function main() {
@@ -21,6 +22,7 @@ async function main() {
   await loadConfigOverrides();
   startConfigRefresh();
   if (env.SMS_PROVIDER === 'dev') logger.warn('SMS_PROVIDER=dev: OTP messages go to the test inbox (GET /v1/dev/sms), not to phones.');
+  startSweep(); // DSH-11 reminders and bell clean-up, every minute
 
   const server = createApp().listen(env.PORT, () => {
     logger.info(`Bimayantra API listening on :${env.PORT}${env.API_PREFIX} (${env.NODE_ENV})`);
@@ -40,8 +42,8 @@ async function main() {
   process.on('unhandledRejection', (reason) => {
     logger.error({ err: reason instanceof Error ? { message: reason.message, stack: reason.stack } : reason }, 'Unhandled promise rejection (kept running)');
   });
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
-  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on('SIGTERM', () => { stopSweep(); shutdown('SIGTERM'); });
+  process.on('SIGINT', () => { stopSweep(); shutdown('SIGINT'); });
 }
 
 main().catch((err) => {

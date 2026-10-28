@@ -9,7 +9,7 @@ import { Account, type AccountDoc } from '../accounts/account.model.js';
 import { audit } from '../audit/audit.service.js';
 import { StoredFile, type FileDoc } from '../files/file.model.js';
 import { assertOwnFile, view as fileView } from '../files/files.service.js';
-import { Notification } from '../notifications/notification.model.js';
+import { notify } from '../notifications/notifications.service.js';
 import { ensureSectionVersions, refreshCompletion } from '../profile/profile.service.js';
 import type { AuthContext } from '../rbac/capabilities.js';
 import { User } from '../users/user.model.js';
@@ -109,6 +109,14 @@ export async function submitKyc(ctx: AuthContext, b: SubmitBody, req: Request) {
     if (!u) throw AppError.versionConflict('KYC', null);
     const name = (await User.findById(ctx.userId, { name: 1 }).lean<{ name: string }>())?.name ?? '';
     await refreshCompletion(acc._id, ctx.userId, u, name, session);
+    // P-10 DSH-21: every active SkyUp reviewer is told, once per submission.
+    const reviewers = await User.find({ role: { $in: ['STF', 'ADM'] }, status: 'ACTIVE' }, { _id: 1 }).session(session).lean<Array<{ _id: string }>>();
+    for (const r of reviewers) {
+      await notify({
+        userId: r._id, accountId: null, kind: 'KYC_WAITING', messageId: 'DSH-21', params: { 'advisor name': name },
+        dedupeKey: `DSH-21|${acc._id}|${now.toISOString()}`, link: { type: 'KYC_REVIEW', id: acc._id },
+      }, session);
+    }
     await audit({ entity: 'kyc', entityId: acc._id, action: status === 'VERIFIED' ? 'KYC_RESUBMITTED_AFTER_VERIFIED' : 'KYC_SUBMITTED',
       before: { status }, after: { status: 'PENDING_REVIEW' } }, { req, session });
     return u;
@@ -182,11 +190,11 @@ export async function decide(ctx: AuthContext, accountId: string, b: DecisionBod
     const adv = await User.findOne({ accountId, role: 'ADV' }, { _id: 1, name: 1 }).lean<{ _id: string; name: string }>();
     if (adv) {
       await refreshCompletion(accountId, adv._id, u, adv.name, session);
-      await new Notification({
-        accountId, userId: adv._id, kind: verified ? 'KYC_VERIFIED' : 'KYC_REJECTED',
-        messageId: verified ? 'PRF-05' : 'PRF-06',
-        message: verified ? msg('PRF-05') : msg('PRF-06', { reason: reasonText(b.reason, b.note) }),
-      }).save({ session: session ?? undefined });
+      await notify({
+        userId: adv._id, accountId, kind: verified ? 'KYC_VERIFIED' : 'KYC_REJECTED',
+        messageId: verified ? 'PRF-05' : 'PRF-06', params: verified ? {} : { reason: reasonText(b.reason, b.note) },
+        dedupeKey: `KYC|${accountId}|${u.profile?.sectionVersions?.kyc ?? 0}`, link: { type: 'PROFILE', id: accountId },
+      }, session);
       // Email (P-06 step 5) goes through the communications outbox, built with P-39 to P-43.
     }
     await audit({ entity: 'kyc', entityId: accountId, action: verified ? 'KYC_VERIFIED' : 'KYC_REJECTED',

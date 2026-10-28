@@ -7,7 +7,7 @@ import { msg, type MessageId } from '../../lib/messages.js';
 import { withTx } from '../../lib/mongo.js';
 import { Account, type AccountDoc } from '../accounts/account.model.js';
 import { audit } from '../audit/audit.service.js';
-import { Notification } from '../notifications/notification.model.js';
+import { notify } from '../notifications/notifications.service.js';
 import type { AuthContext } from '../rbac/capabilities.js';
 import { User } from '../users/user.model.js';
 import { assertOwnFile } from '../files/files.service.js';
@@ -113,12 +113,11 @@ export async function refreshCompletion(accountId: string, userId: string, acc: 
   const milestone = reached.length ? Math.max(...reached) : null;
   await Account.updateOne({ _id: accountId }, { $set: { 'profile.completionPct': c.percent, ...(milestone ? { 'profile.milestoneNotified': milestone } : {}) } }, { session: session ?? undefined });
   if (milestone) {
-    const missing = c.missing.flatMap((g) => g.missing).join(', ');
-    await new Notification({
-      accountId, userId, kind: 'PROFILE_MILESTONE',
-      messageId: c.percent >= 100 ? 'PRF-01' : 'PRF-02',
-      message: c.percent >= 100 ? msg('PRF-01', { percent: c.percent }) : msg('PRF-02', { percent: c.percent, 'missing items': missing }),
-    }).save({ session: session ?? undefined });
+    // P-10: DSH-10 once per milestone (the dedupe key), linked to the profile.
+    await notify({
+      userId, accountId, kind: 'PROFILE_MILESTONE', messageId: 'DSH-10', params: { percent: c.percent },
+      dedupeKey: `DSH-10|${accountId}|${milestone}`, link: { type: 'PROFILE', id: accountId },
+    }, session);
   }
   return c.percent;
 }
