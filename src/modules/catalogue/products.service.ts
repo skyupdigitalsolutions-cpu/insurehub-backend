@@ -91,7 +91,7 @@ export async function publishCheck(kind: 'VERIFIED' | 'OWN', insurerId: string, 
 }
 
 const versionView = (v: ProductVersionDoc) => ({
-  id: v._id, productId: v.productId, number: v.number, status: v.status, templateId: v.templateId, data: v.data as ProductData,
+  id: v._id, productId: v.productId, number: v.number, status: v.status, templateId: v.templateId, data: (v.data ?? {}) as ProductData,
   makerId: v.makerId, submittedAt: v.submittedAt, rejectReason: v.rejectReason, approvedAt: v.approvedAt, publishedAt: v.publishedAt, rev: v.rev,
 });
 
@@ -325,6 +325,16 @@ export async function advisorGet(ctx: AuthContext, id: string) {
     publishedVersion: v ? { id: v._id, number: v.number, data: advisorData(v.data as ProductData) } : null,
     features: tpl?.features ?? [],
   };
+}
+
+/** For + My product: ACTIVE types that have a live template, with that template's features and questions. */
+export async function quotableTypes() {
+  const types = await InsuranceType.find({ status: 'ACTIVE' }).sort({ name: 1 }).lean<InsuranceTypeDoc[]>();
+  const tpls = await TemplateVersion.find({ typeId: { $in: types.map((t) => t._id) }, status: 'ACTIVE' }).lean<TemplateDoc[]>();
+  return types.flatMap((t) => {
+    const tpl = tpls.find((x) => x.typeId === t._id);
+    return tpl ? [{ id: t._id, name: t.name, templateId: tpl._id, features: tpl.features, questions: tpl.questions }] : [];
+  });
 }
 
 // ── Own products (ADV): publish at once in this account (P-22 step 2) ──

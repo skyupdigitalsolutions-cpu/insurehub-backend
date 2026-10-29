@@ -38,7 +38,7 @@ warning); production refuses to start without one. To convert the local Windows 
 ## Tests
 
 ```bash
-npm test     # 58 tests: unit + integration on a real MongoDB replica set (mongodb-memory-server) and in-memory Redis
+npm test     # 219 tests: unit + integration on a real MongoDB replica set (mongodb-memory-server) and in-memory Redis
 TEST_NO_TX=1 npm test   # the same suite as on a standalone MongoDB (no transactions)
 ```
 
@@ -64,6 +64,7 @@ mongodb-memory-server downloads MongoDB on first run; set `MONGOMS_SYSTEM_BINARY
 | Team | `GET/POST /assistants`, `POST /assistants/:id/disable|enable` (P-53); `GET/POST /staff`, `POST /staff/:id/role|disable|enable` (P-48) |
 | Leads (P-12–P-14) | `GET /pipelines`; `GET /leads`, `GET /leads/duplicate-check`, `POST /leads`, `GET/PATCH /leads/:id`, `POST /leads/:id/status`, `/contacts`, `/convert` |
 | Customers (P-15–P-17, P-19) | `GET /customers`, `/customers/duplicate-check`, `POST /customers`, `GET/PATCH /customers/:id`, `POST /:id/deactivate|reactivate`, `PUT /:id/identity`, `POST /:id/identity/reveal`, `GET/POST /:id/family`, `PATCH /:id/family/:memberId`, `POST /:id/family/:memberId/deactivate|activate`, `GET/POST /:id/consents` |
+| Catalogue (P-20–P-25) | SkyUp: `/admin/insurers`, `/admin/types`, `/admin/templates/:id`, `/admin/products`, `/admin/product-versions/:id` (`PUT`, `/submit`, `/approve`, `/reject`, `/use-current-template`), `/admin/approvals`. Advisors and assistants: `GET /products`, `GET /products/:id`; advisor only: `GET/PUT /products/:id/commercials`, `GET /my-products/types`, `GET /my-products/types/:id/template`, `POST /my-products`, `PUT /my-products/:id`, `POST /my-products/:id/status` |
 | Other | `GET /reference` (CFG lists for screens), `GET /audit` (P-50 view), `/health/live`, `/health/ready` |
 | Test tools (`DEV_TOOLS=true`, never production) | `GET/DELETE /dev/sms`, `POST /dev/sms/failing`, `GET/POST /dev/clock`, `GET /dev/config`, `PUT/DELETE /dev/config/:id`, `POST /dev/reset-limits` |
 

@@ -143,6 +143,14 @@ describe('P-22 / P-25 verified products', () => {
     expect((await as(adv.token).get('/products?quotable=true')).body.data).toHaveLength(1);
   });
 
+  it('a brand-new product returns its first version with empty values (data: {}), never without data', async () => {
+    const cat = await catalogue();
+    const { staff } = await people();
+    const c = (await as(staff.token).post('/admin/products', { insurerId: cat.insurerId, typeId: cat.typeId, code: 'NEW-1' })).body.data;
+    expect(c.version.data).toEqual({});
+    expect((await as(staff.token).get(`/admin/products/${c.productId}`)).body.data.versions[0].data).toEqual({});
+  });
+
   it('CAT-07: a product code is unique per insurer', async () => {
     const cat = await catalogue();
     const { staff } = await people();

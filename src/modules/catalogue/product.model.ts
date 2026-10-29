@@ -52,7 +52,8 @@ const versionSchema = new Schema(
     publishedAt: { type: Date, default: null },
     rev: { type: Number, default: 1 },
   },
-  { timestamps: true, versionKey: false },
+  // minimize: false keeps an empty `data: {}` (a brand-new draft); Mongoose would otherwise drop it.
+  { timestamps: true, versionKey: false, minimize: false },
 );
 versionSchema.index({ productId: 1, number: 1 }, { unique: true });
 versionSchema.index({ productId: 1, status: 1 }, { unique: true, partialFilterExpression: { status: 'PUBLISHED' }, name: 'one_published_version' });

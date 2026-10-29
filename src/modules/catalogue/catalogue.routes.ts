@@ -211,6 +211,7 @@ export function productRoutes() {
   r.use(authenticate, allow('products.view'));
   r.get('/', validate({ query: z.object({ typeId: z.string().regex(/^typ_[a-f0-9]{28}$/).optional(), quotable: z.enum(['true', 'false']).optional() }) }), async (req, res) =>
     sendData(res, await products.advisorList(req.auth!, { typeId: req.query.typeId ? String(req.query.typeId) : undefined, quotableOnly: req.query.quotable === 'true' })));
+  r.get('/types', async (_req, res) => sendData(res, await products.quotableTypes())); // before /:id
   r.get('/:id', validate({ params: prdId }), async (req, res) => sendData(res, await products.advisorGet(req.auth!, String(req.params.id))));
   // My commercials: the advisor only (AC-P22-6), private (AC-P22-2).
   r.get('/:id/commercials', allow('commercials.manage'), validate({ params: prdId }), async (req, res) => sendData(res, await products.getCommercials(req.auth!, String(req.params.id))));
