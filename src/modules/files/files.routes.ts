@@ -19,12 +19,13 @@ const UPLOAD_CAPABILITY = {
   PROFILE_PHOTO: 'profile.manage', BUSINESS_LOGO: 'profile.manage', KYC_PAN: 'profile.manage', KYC_LICENCE: 'profile.manage',
   APPOINTMENT_LETTER: 'insurers.manage',
   CUSTOMER_DOCUMENT: 'documents.work', // P-18: advisors AND assistants
+  BROCHURE: 'products.own', // P-22: brochures of an advisor's own products
 } as const satisfies Record<(typeof FILE_PURPOSES)[number], Capability>;
 
 export function fileRoutes() {
   const r = Router();
   r.use(authenticate);
-  const maxBytes = () => Math.max(cfgNum('CFG-27'), cfgNum('CFG-127')) * 1024 * 1024 + 1;
+  const maxBytes = () => Math.max(cfgNum('CFG-27'), cfgNum('CFG-127'), cfgNum('CFG-29')) * 1024 * 1024 + 1;
   r.post('/', validate({ query: z.object({ purpose: z.enum(FILE_PURPOSES) }) }),
     // Who may upload depends on what the file is for: the capability of the screen it belongs to.
     (req, res, next) => allow(UPLOAD_CAPABILITY[String(req.query.purpose) as (typeof FILE_PURPOSES)[number]])(req, res, next),

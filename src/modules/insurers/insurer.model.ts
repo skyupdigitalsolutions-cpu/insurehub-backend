@@ -23,6 +23,26 @@ const insurerSchema = new Schema(
     careEmail: { type: String, default: null },
     logoFileId: { type: String, default: null },
     status: { type: String, enum: INSURER_STATUSES, default: 'DRAFT' },
+    /** Maker-checker (P-20): who made the current draft or change; the approver must be someone else (CAT-05). */
+    makerId: { type: String, default: null },
+    submittedAt: { type: Date, default: null },
+    rejectReason: { type: String, default: null },
+    /**
+     * An edit to an ACTIVE or INACTIVE insurer waits here until approved; advisors keep the live values meanwhile
+     * (AC-P20-3). One pending change at a time (CAT-08). A rejected change keeps its values for editing.
+     */
+    pendingChange: {
+      type: new Schema({
+        values: { type: Schema.Types.Mixed, required: true },
+        status: { type: String, enum: ['PENDING', 'REJECTED'], required: true },
+        makerId: { type: String, required: true },
+        at: { type: Date, required: true },
+        reason: { type: String, default: null },
+      }, { _id: false }),
+      default: null,
+    },
+    approvedBy: { type: String, default: null },
+    approvedAt: { type: Date, default: null },
     version: { type: Number, default: 1 },
   },
   { timestamps: true, versionKey: false },

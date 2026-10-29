@@ -34,6 +34,18 @@ export const CAPABILITIES = {
   'vehicles.work': ['ADV', 'AST'],
   /** The advisor's tasks and follow-ups (P-11). */
   'tasks.work': ['ADV'],
+  /** Dashboard widgets (P-08) and global search (P-09). */
+  'dashboard.view': ['ADV'],
+  /** Catalogue: make changes (insurers, types, products) — Section 9. */
+  'catalogue.make': ['STF', 'ADM'],
+  /** Catalogue: approve or reject another person's change; deactivate (ADM only). */
+  'catalogue.approve': ['ADM'],
+  /** See and quote the catalogue (verified products and the account's own) — P-22. */
+  'products.view': ['ADV', 'AST'],
+  /** Create and change the account's own products (P-22 step 2). */
+  'products.own': ['ADV'],
+  /** Private commission and notes per product (P-22 step 3): the advisor only, never assistants (AC-P22-6). */
+  'commercials.manage': ['ADV'],
   /** Manage assistant users (P-53). */
   'assistants.manage': ['ADV'],
   /** Manage SkyUp users (P-48). */

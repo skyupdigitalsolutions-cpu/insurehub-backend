@@ -22,6 +22,8 @@ import { customerDocumentRoutes, documentRoutes } from './modules/documents/docu
 import { customerVehicleRoutes, vehicleRoutes } from './modules/vehicles/vehicles.routes.js';
 import { taskRoutes } from './modules/tasks/tasks.routes.js';
 import { notificationRoutes } from './modules/notifications/notifications.routes.js';
+import { dashboardRoutes, searchRoutes } from './modules/dashboard/dashboard.routes.js';
+import { adminProductRoutes, approvalRoutes, catalogueInsurerRoutes, ownProductRoutes, productRoutes, productVersionRoutes, templateRoutes, typeRoutes } from './modules/catalogue/catalogue.routes.js';
 import { devRoutes } from './modules/dev/dev.routes.js';
 
 /**
@@ -73,6 +75,16 @@ export function createApp() {
   api.use('/vehicles', vehicleRoutes());
   api.use('/tasks', taskRoutes());
   api.use('/notifications', notificationRoutes());
+  api.use('/dashboard', dashboardRoutes());
+  api.use('/search', searchRoutes());
+  api.use('/admin/insurers', catalogueInsurerRoutes());
+  api.use('/admin/approvals', approvalRoutes());
+  api.use('/admin/types', typeRoutes());
+  api.use('/admin/templates', templateRoutes());
+  api.use('/admin/products', adminProductRoutes());
+  api.use('/admin/product-versions', productVersionRoutes());
+  api.use('/products', productRoutes());
+  api.use('/my-products', ownProductRoutes());
   api.use('/customers', customerRoutes());
   api.use('/audit', auditRoutes());
   api.use('/profile', profileRoutes());

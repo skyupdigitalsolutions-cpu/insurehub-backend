@@ -8,7 +8,9 @@ import { redisCache } from '../../lib/redis.js';
 import { sendData } from '../../lib/response.js';
 import { OtpLock } from '../auth/otp.model.js';
 import { devSms } from '../auth/sms.js';
+import { OtpChallenge } from '../auth/otp.model.js';
 import { INSURER_CATEGORIES, INSURER_STATUSES, Insurer } from '../insurers/insurer.model.js';
+import { runSweep } from '../notifications/sweep.js';
 
 /**
  * TEST TOOLS — mounted only when DEV_TOOLS=true, which the API refuses in production (config/env.ts).
@@ -58,6 +60,9 @@ export function devRoutes() {
     sendData(res, doc);
   });
 
+  // Run the minute sweep now (DSH-11 reminders, bell clean-up), at the test clock's time.
+  r.post('/run-sweep', async (_req, res) => sendData(res, await runSweep()));
+
   r.get('/config', (_req, res) => sendData(res, listCfg()));
   r.put('/config/:id', async (req, res) => {
     const id = String(req.params.id);
@@ -79,7 +84,11 @@ export function devRoutes() {
     const keys = await redisCache().keys('rl:*');
     if (keys.length) await redisCache().del(...keys);
     const locks = await OtpLock.deleteMany({});
-    sendData(res, { counters: keys.length, otpLocks: locks.deletedCount });
+    // The per-number hourly limit (CFG-05) and the resend wait (CFG-04) count OTP records by issue time. Move recent
+    // ones out of those windows so the limits really reset; codes already sent stay valid until they expire.
+    const hourAgo = new Date(Date.now() - 61 * 60_000);
+    const sends = await OtpChallenge.updateMany({ issuedAt: { $gt: hourAgo } }, { $set: { issuedAt: hourAgo } });
+    sendData(res, { counters: keys.length, otpLocks: locks.deletedCount, otpSends: sends.modifiedCount });
   });
   return r;
 }

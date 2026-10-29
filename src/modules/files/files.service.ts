@@ -49,7 +49,7 @@ export async function upload(ctx: AuthContext, purpose: FilePurpose, bytes: Buff
   if (!ctx.accountId) throw AppError.forbidden();
   const image = IMAGE_PURPOSES.includes(purpose);
   const list = cfgList(image ? 'CFG-126' : 'CFG-26');
-  const maxMb = cfgNum(image ? 'CFG-127' : 'CFG-27');
+  const maxMb = cfgNum(image ? 'CFG-127' : purpose === 'BROCHURE' ? 'CFG-29' : 'CFG-27'); // CFG-29: brochures
 
   const detected = detectType(bytes);
   if (!detected || !allowedTypes(list).has(detected.type)) {
@@ -99,4 +99,4 @@ export async function open(ctx: AuthContext, id: string, req: Request) {
 export async function assertOwnFile(ctx: AuthContext, id: string, purpose: FilePurpose, field: string) {
   const f = await StoredFile.findOne({ _id: id, accountId: ctx.accountId, purpose }, { _id: 1 }).lean();
   if (!f) throw AppError.field(field, 'VAL-22');
-} 
+}

@@ -326,3 +326,52 @@ export const timeOfDay = () =>
     m = /^([01]?\d|2[0-3]):([0-5]\d)$/.exec(v);
     return m ? `${m[1]!.padStart(2, '0')}:${m[2]}` : fail(ctx, 'VAL-32');
   });
+
+// FLD-23 Web address: starts with https://, up to CFG-110, no spaces.
+export const webAddress = () =>
+  z.string({ invalid_type_error: 'VAL-28' }).transform((raw, ctx) => {
+    const v = raw.trim();
+    return /^https:\/\/[^\s]+\.[^\s]+$/i.test(v) && v.length <= cfgNum('CFG-110') ? v : fail(ctx, 'VAL-28');
+  });
+
+// FLD-28 Product or company code: CFG-111, uppercase letters, digits and hyphen (uppercased).
+export const code = () =>
+  z.string({ invalid_type_error: 'VAL-33' }).transform((raw, ctx) => {
+    const v = raw.trim().toUpperCase();
+    const { min, max } = cfgRange('CFG-111');
+    return v.length >= min && v.length <= max && /^[A-Z0-9-]+$/.test(v) ? v : fail(ctx, 'VAL-33');
+  });
+
+// FLD-30 Indian phone: spaces and hyphens removed. Toll-free 1800/1860 + 7 digits; landline 0 + area code
+// + number, 11 digits; or a mobile (FLD-01, stored +91).
+export const phone = () =>
+  z.string({ invalid_type_error: 'VAL-36' }).transform((raw, ctx) => {
+    const v = raw.replace(/[\s-]+/g, '');
+    if (/^18(00|60)\d{7}$/.test(v) || /^0\d{10}$/.test(v)) return v;
+    const m = /^(?:\+?91)?([6-9]\d{9})$/.exec(v);
+    return m ? `+91${m[1]}` : fail(ctx, 'VAL-36');
+  });
+
+// P-20 Payment link domain: a bare domain (insurer.com); subdomains of it are accepted at payment time.
+export const bareDomain = () =>
+  z.string({ invalid_type_error: 'CAT-10' }).transform((raw, ctx) => {
+    const v = raw.trim().toLowerCase();
+    return /^(?=.{4,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(v) ? v : fail(ctx, 'CAT-10');
+  });
+
+// FLD-09 Percentage: 0 to 100 with up to 2 decimals.
+export const percent = () =>
+  z.union([z.number(), z.string()], { invalid_type_error: 'VAL-11' }).transform((raw, ctx) => {
+    const v = typeof raw === 'number' ? String(raw) : raw.trim();
+    if (!/^\d{1,3}(\.\d{1,2})?$/.test(v)) return fail(ctx, 'VAL-11');
+    const n = Number(v);
+    return n >= 0 && n <= 100 ? n : fail(ctx, 'VAL-11');
+  });
+
+// FLD-31 IRDAI product UIN: uppercased letters and digits, CFG-105 length, no spaces.
+export const uin = () =>
+  z.string({ invalid_type_error: 'VAL-37' }).transform((raw, ctx) => {
+    const v = raw.trim().toUpperCase();
+    const { min, max } = cfgRange('CFG-105');
+    return v.length >= min && v.length <= max && /^[A-Z0-9]+$/.test(v) ? v : fail(ctx, 'VAL-37');
+  });
