@@ -39,7 +39,8 @@ const schemas: Record<profile.Section, z.ZodTypeAny> = {
     licenceNumber: optional(licenceNumber()),
     licenceValidUntil: optional(todayOrLater()),
     experienceYears: optional(wholeNumber(0, () => cfgNum('CFG-151'))),
-    categories: z.array(oneOf(lists.insuranceTypes)).max(50).transform((a) => [...new Set(a)]).optional(),
+    // Checked on save against the starting types (CFG-115) and every ACTIVE catalogue type (P-21 + Type).
+    categories: z.array(z.string().trim().min(1).max(80)).max(50).transform((a) => [...new Set(a)]).optional(),
   }).strict(),
   business: z.object({
     version: required(version()),

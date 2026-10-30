@@ -46,6 +46,25 @@ export const CAPABILITIES = {
   'products.own': ['ADV'],
   /** Private commission and notes per product (P-22 step 3): the advisor only, never assistants (AC-P22-6). */
   'commercials.manage': ['ADV'],
+  /** My prices (P-24): the advisor's private price versions. */
+  'prices.manage': ['ADV'],
+  /** Best-fit ranking (P-26). */
+  'bestfit.use': ['ADV', 'AST'],
+  /** Quotations (P-27): create and generate. The BPD says ADV; assistants may prepare drafts (decision Q48). */
+  'quotations.work': ['ADV', 'AST'],
+  /** Price override and discount on a quotation: ADV only (P-27, GEN-03 for assistants). */
+  'quotations.pricing': ['ADV'],
+  /** Files only the server creates (quotation PDFs): no role may upload them. */
+  'files.system': [],
+  /** Payment links and recorded payments (P-31, P-32): the advisor only (GEN-03 for assistants, AC-P32-5). */
+  'payments.record': ['ADV'],
+  /** Proposals (P-55): advisors and assistants prepare; only the advisor submits. */
+  'proposals.prepare': ['ADV', 'AST'],
+  'proposals.submit': ['ADV'],
+  /** Brochures: advisors (own products, P-58 attachments) and SkyUp (P-23 OCR). */
+  'brochure.upload': ['ADV', 'STF', 'ADM'],
+  /** Suggest a correction to a verified product (P-58). */
+  'corrections.suggest': ['ADV'],
   /** Manage assistant users (P-53). */
   'assistants.manage': ['ADV'],
   /** Manage SkyUp users (P-48). */

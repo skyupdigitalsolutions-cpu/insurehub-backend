@@ -84,7 +84,7 @@ const accountSchema = new Schema(
       milestoneNotified: { type: Number, default: 0 },
     },
     pipelines: { type: [pipelineSchema], default: [] },
-    counters: { lead: { type: Number, default: 0 }, customer: { type: Number, default: 0 } },
+    counters: { lead: { type: Number, default: 0 }, customer: { type: Number, default: 0 }, quotation: { type: Number, default: 0 }, comparison: { type: Number, default: 0 }, proposal: { type: Number, default: 0 } },
     version: { type: Number, default: 1 },
   },
   { timestamps: true, versionKey: false },

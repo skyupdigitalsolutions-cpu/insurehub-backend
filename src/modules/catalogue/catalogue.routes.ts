@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { authenticate } from '../../middleware/authenticate.js';
-import { allow } from '../../middleware/authorize.js';
+import { allow, writable } from '../../middleware/authorize.js';
 import { idempotent } from '../../middleware/idempotency.js';
 import { validate } from '../../middleware/validate.js';
 import { requireStepUp } from '../auth/stepUp.js';
@@ -12,6 +12,9 @@ import { INSURER_CATEGORIES } from '../insurers/insurer.model.js';
 import * as ins from './insurers.service.js';
 import * as types from './types.service.js';
 import * as products from './products.service.js';
+import * as prices from './prices.service.js';
+import * as corrections from './corrections.service.js';
+import * as ocr from './ocr.service.js';
 import { DATA_TYPES, FACTOR_SOURCES, FEATURE_GROUPS } from './types.model.js';
 
 const labels = {
@@ -198,6 +201,10 @@ export function productVersionRoutes() {
     const out = await products.adminApprove(req.auth!, String(req.params.id), req.body, req);
     sendDone(res, out.version, 'CAT-03', out.params);
   });
+  // P-23 brochure reading on a DRAFT version
+  r.post('/:id/ocr', validate({ params: pvId, body: z.object({ fileId: required(recordId('fil')) }).strict() }, { fileId: 'Brochure' }), async (req, res) =>
+    sendDone(res, await ocr.start(req.auth!, String(req.params.id), req.body.fileId, req), 'OCR-01', { 'CFG-38': cfgNum('CFG-38') }, 202));
+  r.get('/:id/ocr', validate({ params: pvId }), async (req, res) => sendData(res, await ocr.latest(String(req.params.id))));
   r.post('/:id/reject', allow('catalogue.approve'), requireStepUp, validate({ params: pvId, body: z.object({ rev: required(version()), reason: required(shortText()) }).strict() }, prodLabels), async (req, res) => {
     const out = await products.adminReject(req.auth!, String(req.params.id), req.body, req);
     sendDone(res, out.version, 'CAT-04', out.params);
@@ -211,11 +218,15 @@ export function productRoutes() {
   r.use(authenticate, allow('products.view'));
   r.get('/', validate({ query: z.object({ typeId: z.string().regex(/^typ_[a-f0-9]{28}$/).optional(), quotable: z.enum(['true', 'false']).optional() }) }), async (req, res) =>
     sendData(res, await products.advisorList(req.auth!, { typeId: req.query.typeId ? String(req.query.typeId) : undefined, quotableOnly: req.query.quotable === 'true' })));
-  r.get('/types', async (_req, res) => sendData(res, await products.quotableTypes())); // before /:id
   r.get('/:id', validate({ params: prdId }), async (req, res) => sendData(res, await products.advisorGet(req.auth!, String(req.params.id))));
+  // P-58: suggest a correction to a verified product (the advisor never edits it, AC-P58-1).
+  r.get('/:id/corrections/fields', allow('corrections.suggest'), validate({ params: prdId }), async (req, res) => sendData(res, await corrections.correctableFields(String(req.params.id))));
+  r.get('/:id/corrections', allow('corrections.suggest'), validate({ params: prdId }), async (req, res) => sendData(res, await corrections.mine(req.auth!, String(req.params.id))));
+  r.post('/:id/corrections', allow('corrections.suggest'), writable, validate({ params: prdId, body: z.object({ field: required(z.string().max(80)), proposedValue: required(shortText()), reason: required(shortText()), attachmentFileId: optional(recordId('fil')) }).strict() }, { field: 'Field', proposedValue: 'Proposed value', reason: 'Reason', attachmentFileId: 'Attachment' }), idempotent(),
+    async (req, res) => sendDone(res, await corrections.suggest(req.auth!, String(req.params.id), req.body, req), 'CAT-35', {}, 201));
   // My commercials: the advisor only (AC-P22-6), private (AC-P22-2).
   r.get('/:id/commercials', allow('commercials.manage'), validate({ params: prdId }), async (req, res) => sendData(res, await products.getCommercials(req.auth!, String(req.params.id))));
-  r.put('/:id/commercials', allow('commercials.manage'), validate({ params: prdId, body: z.object({ commissionPercent: optional(percent()), notes: optional(notes()) }).strict() }, prodLabels), async (req, res) => {
+  r.put('/:id/commercials', allow('commercials.manage'), writable, validate({ params: prdId, body: z.object({ commissionPercent: optional(percent()), notes: optional(notes()) }).strict() }, prodLabels), async (req, res) => {
     const out = await products.saveCommercials(req.auth!, String(req.params.id), { commissionPercent: req.body.commissionPercent ?? null, notes: req.body.notes ?? null }, req);
     sendDone(res, out.commercials, 'CAT-36', out.params);
   });
@@ -226,11 +237,93 @@ export function productRoutes() {
 export function ownProductRoutes() {
   const r = Router();
   r.use(authenticate, allow('products.own'));
-  r.post('/', validate({ body: z.object({ insurerId: required(recordId('ins')), typeId: required(z.string().regex(/^typ_[a-f0-9]{28}$/)), code: required(code()), data: productData }).strict() }, prodLabels), idempotent(),
+  // Read-only lookups for the + My product form: types with a live template, and that template's features.
+  r.get('/types', async (_req, res) => sendData(res, await types.ownProductTypes()));
+  r.get('/types/:id/template', validate({ params: typeId }), async (req, res) => sendData(res, await types.liveFeatures(String(req.params.id))));
+  r.post('/', writable, validate({ body: z.object({ insurerId: required(recordId('ins')), typeId: required(z.string().regex(/^typ_[a-f0-9]{28}$/)), code: required(code()), data: productData }).strict() }, prodLabels), idempotent(),
     async (req, res) => sendDone(res, await products.ownCreate(req.auth!, req.body, req), 'GEN-08', { 'Record type': 'Product' }, 201));
-  r.put('/:id', validate({ params: prdId, body: z.object({ version: required(version()), data: productData }).strict() }, prodLabels), async (req, res) =>
+  r.put('/:id', writable, validate({ params: prdId, body: z.object({ version: required(version()), data: productData }).strict() }, prodLabels), async (req, res) =>
     sendDone(res, await products.ownEdit(req.auth!, String(req.params.id), req.body, req), 'GEN-08', { 'Record type': 'Product' }));
-  r.post('/:id/status', validate({ params: prdId, body: z.object({ version: required(version()), status: required(enumOf(['UPCOMING', 'ACTIVE', 'WITHDRAWN'] as const)) }).strict() }, prodLabels), async (req, res) =>
+  r.post('/:id/status', writable, validate({ params: prdId, body: z.object({ version: required(version()), status: required(enumOf(['UPCOMING', 'ACTIVE', 'WITHDRAWN'] as const)) }).strict() }, prodLabels), idempotent(), async (req, res) =>
     sendDone(res, await products.ownSetStatus(req.auth!, String(req.params.id), req.body, req), 'GEN-08', { 'Record type': 'Product' }));
+  return r;
+}
+
+// ── P-24 price versions ──
+const priceLabels = { effectiveFrom: 'Effective from', taxPercent: 'Tax %', rows: 'Rate table', csv: 'Rate table file', riderPrices: 'Rider prices', sourceNote: 'Source note' };
+const rawRows = z.array(z.object({ factors: z.record(z.string().max(60), z.string().max(100)), basePremium: z.union([z.number(), z.string().max(30)]) }).strict()).max(100_000);
+const priceBody = z.object({
+  effectiveFrom: required(date()), taxPercent: required(percent()), rows: rawRows.optional(), csv: z.string().max(5_000_000).optional(),
+  riderPrices: z.array(z.object({ name: required(shortText()), value: required(z.number().min(0).max(10_000_000)) }).strict()).max(100).optional(),
+  sourceNote: optional(shortText()),
+}).strict();
+const checkBody = z.object({ rows: rawRows.optional(), csv: z.string().max(5_000_000).optional() }).strict();
+const prcParams = z.object({ id: z.string().regex(/^prd_[a-f0-9]{28}$/), pid: z.string().regex(/^prc_[a-f0-9]{28}$/) });
+
+/** Shared by advisors (owner = their account) and SkyUp (owner = SKYUP reference price). */
+function priceRoutes(r: Router, owner: (req: Express.Request) => string, guard: (req: Express.Request, id: string) => Promise<void>, writes: Array<import('express').RequestHandler>) {
+  r.get('/:id/prices', validate({ params: prdId }), async (req, res) => { await guard(req, String(req.params.id)); sendData(res, await prices.list(owner(req), String(req.params.id))); });
+  r.get('/:id/prices/template', validate({ params: prdId }), async (req, res) => {
+    await guard(req, String(req.params.id));
+    const { factors } = await prices.productAndFactors(String(req.params.id));
+    sendData(res, { csv: prices.template(factors), columns: [...factors.map((f) => f.key), 'base_premium'], factors: factors.map((f) => ({ key: f.key, name: f.name, kind: f.kind, choices: f.kind === 'BAND' ? f.bands.map((b) => `${b.from}-${b.to}`) : f.values })) });
+  });
+  r.get('/:id/prices/reference', validate({ params: prdId }), async (req, res) => { await guard(req, String(req.params.id)); sendData(res, await prices.reference(String(req.params.id))); });
+  r.get('/:id/prices/:pid', validate({ params: prcParams }), async (req, res) => { await guard(req, String(req.params.id)); sendData(res, await prices.getOne(owner(req), String(req.params.pid))); });
+  r.post('/:id/prices/check', validate({ params: prdId, body: checkBody }, priceLabels), async (req, res) => { await guard(req, String(req.params.id)); sendData(res, await prices.check(String(req.params.id), req.body)); });
+  r.post('/:id/prices', ...writes, validate({ params: prdId, body: priceBody }, priceLabels), idempotent(), async (req, res) => {
+    await guard(req, String(req.params.id));
+    const out = await prices.create(req.auth!, owner(req), String(req.params.id), req.body, req);
+    sendDone(res, out.price, out.messageId, out.params, 201, out.warnings.length ? { warnings: out.warnings } : undefined);
+  });
+  r.post('/:id/prices/:pid/cancel', ...writes, validate({ params: prcParams }), idempotent(), async (req, res) => {
+    await guard(req, String(req.params.id));
+    const out = await prices.cancel(req.auth!, owner(req), String(req.params.pid), req);
+    sendDone(res, out.price, 'CAT-25', out.params);
+  });
+}
+
+/** My prices (P-24): the advisor's private price versions; any product the advisor can quote. */
+export function advisorPriceRoutes() {
+  const r = Router();
+  // Only the /prices paths: a router-wide check would also block assistants from the product routes mounted after this.
+  r.use('/:id/prices', authenticate, allow('prices.manage'));
+  priceRoutes(r, (req) => req.auth!.accountId!, async (req, id) => { await products.advisorGet(req.auth!, id); }, [writable]);
+  return r;
+}
+
+/** SkyUp reference prices (P-24): verified products only. */
+export function referencePriceRoutes() {
+  const r = Router();
+  r.use('/:id/prices', authenticate, allow('catalogue.make'));
+  priceRoutes(r, () => prices.SKYUP, async (_req, id) => { await products.adminGet(id); }, []);
+  return r;
+}
+
+/** Admin → Approvals → Product corrections (P-58): STF or ADM review; Accept opens a DRAFT that still needs P-25. */
+export function correctionRoutes() {
+  const r = Router();
+  r.use(authenticate, allow('catalogue.make'));
+  const id = z.object({ id: z.string().regex(/^cor_[a-f0-9]{28}$/) });
+  r.get('/', async (_req, res) => sendData(res, await corrections.queue()));
+  r.post('/:id/accept', validate({ params: id }), async (req, res) => sendData(res, await corrections.accept(req.auth!, String(req.params.id), req)));
+  r.post('/:id/reject', validate({ params: id, body: z.object({ reason: required(shortText()) }).strict() }, { reason: 'Reason' }), async (req, res) =>
+    sendData(res, await corrections.reject(req.auth!, String(req.params.id), req.body.reason, req)));
+  return r;
+}
+
+/** P-23 OCR jobs: decisions, bulk accept above CFG-37, apply to draft, try again. */
+export function ocrJobRoutes() {
+  const r = Router();
+  r.use(authenticate, allow('catalogue.make'));
+  const id = z.object({ id: z.string().regex(/^ocr_[a-f0-9]{28}$/) });
+  r.put('/:id/decisions', validate({ params: id, body: z.object({ decisions: z.array(z.object({ key: z.string().max(60), decision: enumOf(['ACCEPT', 'EDIT', 'IGNORE', 'NOT_STATED'] as const), value: z.string().max(500).nullable().optional() }).strict()).max(300) }).strict() }), async (req, res) =>
+    sendData(res, await ocr.decide(req.auth!, String(req.params.id), req.body.decisions)));
+  r.post('/:id/accept-high', validate({ params: id }), async (req, res) => sendData(res, await ocr.acceptHigh(req.auth!, String(req.params.id))));
+  r.post('/:id/apply', validate({ params: id }), async (req, res) => {
+    const out = await ocr.apply(req.auth!, String(req.params.id), req);
+    sendDone(res, out.job, 'OCR-06', out.params);
+  });
+  r.post('/:id/retry', validate({ params: id }), async (req, res) => sendDone(res, await ocr.retry(req.auth!, String(req.params.id), req), 'OCR-01', { 'CFG-38': cfgNum('CFG-38') }, 202));
   return r;
 }

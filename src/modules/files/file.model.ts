@@ -6,7 +6,7 @@ import { newId } from '../../lib/ids.js';
  * Files are never changed or deleted (the BPD stores files with object lock): every update and delete
  * on this collection is refused. A "replaced" document is a NEW file; the record points at the new id.
  */
-export const FILE_PURPOSES = ['PROFILE_PHOTO', 'BUSINESS_LOGO', 'KYC_PAN', 'KYC_LICENCE', 'APPOINTMENT_LETTER', 'CUSTOMER_DOCUMENT', 'BROCHURE'] as const;
+export const FILE_PURPOSES = ['PROFILE_PHOTO', 'BUSINESS_LOGO', 'KYC_PAN', 'KYC_LICENCE', 'APPOINTMENT_LETTER', 'CUSTOMER_DOCUMENT', 'BROCHURE', 'QUOTATION_PDF'] as const;
 export type FilePurpose = (typeof FILE_PURPOSES)[number];
 /** Photos and logos are images only (CFG-126, CFG-127); documents follow CFG-26 and CFG-27. */
 export const IMAGE_PURPOSES: readonly FilePurpose[] = ['PROFILE_PHOTO', 'BUSINESS_LOGO'];

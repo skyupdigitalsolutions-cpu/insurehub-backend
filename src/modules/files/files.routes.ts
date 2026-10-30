@@ -19,7 +19,8 @@ const UPLOAD_CAPABILITY = {
   PROFILE_PHOTO: 'profile.manage', BUSINESS_LOGO: 'profile.manage', KYC_PAN: 'profile.manage', KYC_LICENCE: 'profile.manage',
   APPOINTMENT_LETTER: 'insurers.manage',
   CUSTOMER_DOCUMENT: 'documents.work', // P-18: advisors AND assistants
-  BROCHURE: 'products.own', // P-22: brochures of an advisor's own products
+  BROCHURE: 'brochure.upload', // P-22 own products (ADV); P-23 OCR and P-58 attachments
+  QUOTATION_PDF: 'files.system', // built by the server on Generate (P-27); never uploaded
 } as const satisfies Record<(typeof FILE_PURPOSES)[number], Capability>;
 
 export function fileRoutes() {

@@ -23,7 +23,11 @@ import { customerVehicleRoutes, vehicleRoutes } from './modules/vehicles/vehicle
 import { taskRoutes } from './modules/tasks/tasks.routes.js';
 import { notificationRoutes } from './modules/notifications/notifications.routes.js';
 import { dashboardRoutes, searchRoutes } from './modules/dashboard/dashboard.routes.js';
-import { adminProductRoutes, approvalRoutes, catalogueInsurerRoutes, ownProductRoutes, productRoutes, productVersionRoutes, templateRoutes, typeRoutes } from './modules/catalogue/catalogue.routes.js';
+import { bestFitRoutes } from './modules/bestfit/bestfit.routes.js';
+import { publicQuotationRoutes, quotationRoutes } from './modules/quotations/quotations.routes.js';
+import { comparisonRoutes, publicComparisonRoutes } from './modules/quotations/comparisons.routes.js';
+import { paymentRoutes, proposalRoutes, quotationPaymentRoutes } from './modules/payments/payments.routes.js';
+import { correctionRoutes, ocrJobRoutes, adminProductRoutes, advisorPriceRoutes, referencePriceRoutes, approvalRoutes, catalogueInsurerRoutes, ownProductRoutes, productRoutes, productVersionRoutes, templateRoutes, typeRoutes } from './modules/catalogue/catalogue.routes.js';
 import { devRoutes } from './modules/dev/dev.routes.js';
 
 /**
@@ -72,6 +76,7 @@ export function createApp() {
   api.use('/customers/:customerId/documents', customerDocumentRoutes()); // before /customers
   api.use('/documents', documentRoutes());
   api.use('/customers/:customerId/vehicles', customerVehicleRoutes()); // before /customers
+  api.use('/customers/:customerId/best-fit', bestFitRoutes());
   api.use('/vehicles', vehicleRoutes());
   api.use('/tasks', taskRoutes());
   api.use('/notifications', notificationRoutes());
@@ -81,10 +86,21 @@ export function createApp() {
   api.use('/admin/approvals', approvalRoutes());
   api.use('/admin/types', typeRoutes());
   api.use('/admin/templates', templateRoutes());
+  api.use('/admin/products', referencePriceRoutes()); // /admin/products/:id/prices… (before the product routes)
   api.use('/admin/products', adminProductRoutes());
   api.use('/admin/product-versions', productVersionRoutes());
+  api.use('/products', advisorPriceRoutes()); // /products/:id/prices…
   api.use('/products', productRoutes());
   api.use('/my-products', ownProductRoutes());
+  api.use('/quotations', quotationPaymentRoutes()); // /quotations/:id/payment-link, /payments (before the quotation routes)
+  api.use('/quotations', quotationRoutes());
+  api.use('/payments', paymentRoutes());
+  api.use('/proposals', proposalRoutes());
+  api.use('/public/q', publicQuotationRoutes());
+  api.use('/comparisons', comparisonRoutes());
+  api.use('/public/c', publicComparisonRoutes());
+  api.use('/admin/corrections', correctionRoutes());
+  api.use('/admin/ocr-jobs', ocrJobRoutes());
   api.use('/customers', customerRoutes());
   api.use('/audit', auditRoutes());
   api.use('/profile', profileRoutes());

@@ -10,6 +10,7 @@ import { Insurer, type InsurerDoc } from '../insurers/insurer.model.js';
 import type { AuthContext } from '../rbac/capabilities.js';
 import { Commercial, Product, ProductVersion, type CommercialDoc, type ProductDoc, type ProductVersionDoc } from './product.model.js';
 import { InsuranceType, TemplateVersion, type InsuranceTypeDoc, type TemplateDoc } from './types.model.js';
+import { hasReference } from './prices.service.js';
 
 /** The product version's values (validated field by field on the route; completeness is checked on submit). */
 export interface ProductData {
@@ -50,7 +51,7 @@ async function activeTemplate(typeId: string) {
  * everything else missing is listed in CAT-13. Verified products also need a source and, for RATE_TABLE, a price
  * version (P-24, Stage 4).
  */
-export async function publishCheck(kind: 'VERIFIED' | 'OWN', insurerId: string, typeId: string, templateId: string, d: ProductData) {
+export async function publishCheck(kind: 'VERIFIED' | 'OWN', insurerId: string, typeId: string, templateId: string, d: ProductData, productId?: string) {
   if (!d.uin) throw AppError.field('uin', 'CAT-33'); // AC-P22-1
   const fields: Array<{ field: string; messageId: 'CAT-16' | 'CAT-34' | 'CAT-15'; params?: Record<string, string | number> }> = [];
   const f = (field: string, id: 'CAT-16' | 'CAT-34' | 'CAT-15', params: Record<string, string | number> = {}) => fields.push({ field, messageId: id, params });
@@ -84,7 +85,7 @@ export async function publishCheck(kind: 'VERIFIED' | 'OWN', insurerId: string, 
   }
   if (kind === 'VERIFIED') {
     if (!d.brochureFileId && !(d.sourceLink && d.sourceCheckedOn)) missing.push('the insurer page link and the date it was checked');
-    if (d.pricingMode === 'RATE_TABLE') missing.push('a SkyUp reference price version (P-24)');
+    if (d.pricingMode === 'RATE_TABLE' && !(productId && (await hasReference(productId)))) missing.push('a SkyUp reference price version (P-24)');
   }
   if (fields.length) throw AppError.fields(fields);
   if (missing.length) throw new AppError(400, 'VALIDATION_FAILED', 'CAT-13', { list: missing.join(', ') }, { missing });
@@ -213,7 +214,7 @@ export async function adminSubmit(ctx: AuthContext, vid: string, b: { rev: numbe
   if (!v) throw AppError.notFound();
   if (v.status !== 'DRAFT') throw AppError.invalidState('product version', v.status.replace('_', ' '));
   const p = await Product.findById(v.productId).lean<ProductDoc>();
-  await publishCheck('VERIFIED', p!.insurerId, p!.typeId, v.templateId, v.data as ProductData);
+  await publishCheck('VERIFIED', p!.insurerId, p!.typeId, v.templateId, v.data as ProductData, p!._id);
   const u = await ProductVersion.findOneAndUpdate({ _id: vid, status: 'DRAFT', rev: b.rev }, { $set: { status: 'PENDING_APPROVAL', submittedAt: clock.now(), makerId: ctx.userId }, $inc: { rev: 1 } }, { new: true }).lean<ProductVersionDoc>();
   if (!u) throw AppError.versionConflict('product version', versionView(v));
   await audit({ entity: 'productVersion', entityId: vid, action: 'PRODUCT_SUBMITTED' }, { req });
@@ -308,7 +309,7 @@ export async function advisorList(ctx: AuthContext, opts: { typeId?: string; quo
     const status = effectiveStatus(p);
     const ins = n.ins.get(p.insurerId); const typ = n.typ.get(p.typeId);
     const quotable = status === 'ACTIVE' && ins?.status === 'ACTIVE' && typ?.status === 'ACTIVE';
-    return { id: p._id, kind: p.kind, code: p.code, name: p.name, status, insurer: ins?.name ?? null, type: typ?.name ?? null, quotable, renewalOnly: status === 'WITHDRAWN' };
+    return { id: p._id, kind: p.kind, code: p.code, name: p.name, status, insurerId: p.insurerId, typeId: p.typeId, insurer: ins?.name ?? null, type: typ?.name ?? null, quotable, renewalOnly: status === 'WITHDRAWN' };
   });
   return opts.quotableOnly ? out.filter((p) => p.quotable) : out; // AC-P22-4 / AC-P25-4
 }
@@ -320,21 +321,16 @@ export async function advisorGet(ctx: AuthContext, id: string) {
   const n = await names([p.insurerId], [p.typeId]);
   const tpl = v ? await TemplateVersion.findById(v.templateId, { features: 1 }).lean<TemplateDoc>() : null;
   return {
-    id: p._id, kind: p.kind, code: p.code, status: effectiveStatus(p), version: p.version,
+    id: p._id, kind: p.kind, code: p.code, status: effectiveStatus(p), version: p.version, insurerId: p.insurerId, typeId: p.typeId,
     insurer: n.ins.get(p.insurerId)?.name ?? null, type: n.typ.get(p.typeId)?.name ?? null,
-    publishedVersion: v ? { id: v._id, number: v.number, data: advisorData(v.data as ProductData) } : null,
+    publishedVersion: v ? {
+      id: v._id, number: v.number, templateId: v.templateId, data: advisorData((v.data ?? {}) as ProductData),
+      // Own products only: the values as the owner typed them, to edit from. `data` shows "Not stated by insurer" as
+      // text (AC-P22-5); saving that back would store the text as the value.
+      ...(p.kind === 'OWN' ? { entered: (v.data ?? {}) as ProductData } : {}),
+    } : null,
     features: tpl?.features ?? [],
   };
-}
-
-/** For + My product: ACTIVE types that have a live template, with that template's features and questions. */
-export async function quotableTypes() {
-  const types = await InsuranceType.find({ status: 'ACTIVE' }).sort({ name: 1 }).lean<InsuranceTypeDoc[]>();
-  const tpls = await TemplateVersion.find({ typeId: { $in: types.map((t) => t._id) }, status: 'ACTIVE' }).lean<TemplateDoc[]>();
-  return types.flatMap((t) => {
-    const tpl = tpls.find((x) => x.typeId === t._id);
-    return tpl ? [{ id: t._id, name: t.name, templateId: tpl._id, features: tpl.features, questions: tpl.questions }] : [];
-  });
 }
 
 // ── Own products (ADV): publish at once in this account (P-22 step 2) ──

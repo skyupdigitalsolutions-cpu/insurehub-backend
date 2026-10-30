@@ -38,3 +38,21 @@ export async function readDocument(type: string, bytes: Buffer, mimeType: string
   const text = await ocrText(bytes, mimeType);
   return { text, values: parseFor(type, text) };
 }
+
+/** P-23: OCR text page by page, with each page's confidence (0 to 1), for brochure reading. */
+export async function ocrPages(bytes: Buffer, mimeType: string): Promise<{ text: string; pages: Array<{ number: number; text: string; confidence: number }> }> {
+  if (env.DOCUMENT_READER === 'none') throw new Error('No document reader is set up');
+  const name = `projects/${env.DOCUMENT_AI_PROJECT_ID}/locations/${env.DOCUMENT_AI_LOCATION}/processors/${env.DOCUMENT_AI_PROCESSOR_ID}`;
+  const [result] = await google().processDocument(
+    { name, rawDocument: { content: bytes.toString('base64'), mimeType }, skipHumanReview: true },
+    { timeout: 120_000, maxRetries: 1 },
+  );
+  const doc = result.document;
+  const text = doc?.text ?? '';
+  const pages = (doc?.pages ?? []).map((pg, i) => {
+    const segs = pg.layout?.textAnchor?.textSegments ?? [];
+    const t = segs.map((sg) => text.slice(Number(sg.startIndex ?? 0), Number(sg.endIndex ?? 0))).join('');
+    return { number: Number(pg.pageNumber ?? i + 1), text: t, confidence: Number(pg.layout?.confidence ?? 0.9) };
+  });
+  return { text, pages: pages.length ? pages : [{ number: 1, text, confidence: 0.9 }] };
+}

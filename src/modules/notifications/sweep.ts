@@ -33,7 +33,11 @@ export async function runSweep(now = clock.now()) {
     if (created) reminders++;
   }
   const removed = await removeOld(now);
-  return { reminders, removed };
+  // SYS-01: quotations past their validity (repeat-safe, AC-P29-3)
+  const { expireDue } = await import('../quotations/lifecycle.service.js');
+  const expired = await expireDue();
+  await (await import('../quotations/comparisons.service.js')).expireComparisons();
+  return { reminders, removed, expired };
 }
 
 let timer: NodeJS.Timeout | undefined;

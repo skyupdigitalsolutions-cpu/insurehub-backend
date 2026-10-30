@@ -60,6 +60,19 @@ export function devRoutes() {
     sendData(res, doc);
   });
 
+  // Extend an advisor account's trial (read-only mode, GR-33, starts when it ends). Plans and renewals are P-47.
+  r.post('/extend-trial', async (req, res) => {
+    const { User } = await import('../users/user.model.js');
+    const { Account } = await import('../accounts/account.model.js');
+    const { normalizeMobile } = await import('../../lib/phone.js');
+    const days = Math.min(365, Math.max(1, Number(req.body?.days ?? 30)));
+    const user = await User.findOne({ mobile: normalizeMobile(String(req.body?.mobile ?? '')) }, { accountId: 1 }).lean<{ accountId: string | null }>();
+    if (!user?.accountId) throw AppError.notFound();
+    const endsAt = new Date(Date.now() + days * 86_400_000);
+    await Account.updateOne({ _id: user.accountId }, { $set: { 'subscription.status': 'TRIAL', 'subscription.endsAt': endsAt } });
+    sendData(res, { accountId: user.accountId, status: 'TRIAL', endsAt });
+  });
+
   // Run the minute sweep now (DSH-11 reminders, bell clean-up), at the test clock's time.
   r.post('/run-sweep', async (_req, res) => sendData(res, await runSweep()));
 

@@ -49,6 +49,10 @@ const versionSchema = new Schema(
     approvedBy: { type: String, default: null },
     approvedAt: { type: Date, default: null },
     approvalStepUpId: { type: String, default: null }, // P-25 backend rule: the OTP verification ID is stored
+    /** P-58: accepted corrections whose values this version carries ({ correctionId, field }). */
+    corrections: { type: [new Schema({ correctionId: String, field: String }, { _id: false })], default: [] },
+    /** P-23: values read by OCR and checked by a person: { [featureKey]: { jobId, checkedBy } }. */
+    ocrMarks: { type: Schema.Types.Mixed, default: {} },
     publishedAt: { type: Date, default: null },
     rev: { type: Number, default: 1 },
   },

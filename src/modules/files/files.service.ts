@@ -45,8 +45,12 @@ function cleanName(raw: string | undefined, type: string) {
  * Order of checks follows the user's fix order: type (VAL-23), size (VAL-24), opens (VAL-26).
  * VAL-27 (security scan) needs a scanning service: OPEN-QUESTIONS Q27.
  */
+/** Who owns a file: the advisor's account, or 'SKYUP' for files SkyUp Staff and Admins upload (brochures, P-23). */
+export const ownerOf = (ctx: AuthContext) => ctx.accountId ?? (ctx.role === 'STF' || ctx.role === 'ADM' ? 'SKYUP' : null);
+
 export async function upload(ctx: AuthContext, purpose: FilePurpose, bytes: Buffer, fileName: string | undefined, req: Request) {
-  if (!ctx.accountId) throw AppError.forbidden();
+  const ownerKey = ownerOf(ctx);
+  if (!ownerKey) throw AppError.forbidden();
   const image = IMAGE_PURPOSES.includes(purpose);
   const list = cfgList(image ? 'CFG-126' : 'CFG-26');
   const maxMb = cfgNum(image ? 'CFG-127' : purpose === 'BROCHURE' ? 'CFG-29' : 'CFG-27'); // CFG-29: brochures
@@ -59,11 +63,11 @@ export async function upload(ctx: AuthContext, purpose: FilePurpose, bytes: Buff
   if (bytes.length === 0 || !opensCleanly(bytes, detected.type)) throw AppError.field('file', 'VAL-26');
 
   const rec = new StoredFile({
-    accountId: ctx.accountId, uploadedBy: ctx.userId, purpose, type: detected.type, mime: detected.mime, size: bytes.length,
+    accountId: ownerKey, uploadedBy: ctx.userId, purpose, type: detected.type, mime: detected.mime, size: bytes.length,
     sha256: createHash('sha256').update(bytes).digest('hex'), name: cleanName(fileName, detected.type), storageKey: 'pending',
     backend: storage.name,
   });
-  rec.storageKey = `${ctx.accountId}/${rec._id}`;
+  rec.storageKey = `${ownerKey.toLowerCase()}/${rec._id}`; // keys are lowercase (storage.ts checkKey)
   await storage.put(rec.storageKey, bytes); // bytes first: a record never points at a missing file
   await rec.save();
   await audit({ entity: 'file', entityId: rec._id, action: 'FILE_UPLOADED', after: { purpose, type: rec.type, size: rec.size } }, { req });
@@ -81,7 +85,7 @@ export const view = (f: FileDoc) => ({ id: f._id, purpose: f.purpose, type: f.ty
 export async function open(ctx: AuthContext, id: string, req: Request) {
   const f = await StoredFile.findById(id).lean<FileDoc>();
   const kyc = !!f && KYC_PURPOSES.includes(f.purpose as FilePurpose);
-  const owner = !!f && f.accountId === ctx.accountId && (ctx.role === 'ADV' || (ctx.role === 'AST' && !kyc));
+  const owner = !!f && f.accountId === ownerOf(ctx) && (ctx.role === 'ADV' || (ctx.role === 'AST' && !kyc) || f.accountId === 'SKYUP');
   const reviewer = !!f && kyc && (ctx.role === 'STF' || ctx.role === 'ADM');
   if (!f || !(owner || reviewer)) throw AppError.notFound();
   if (reviewer) await audit({ entity: 'file', entityId: f._id, action: 'KYC_FILE_VIEWED', after: { accountId: f.accountId, purpose: f.purpose } }, { req });
@@ -97,6 +101,6 @@ export async function open(ctx: AuthContext, id: string, req: Request) {
 
 /** A file the advisor's account owns, with the expected purpose (used when a form references a file id). */
 export async function assertOwnFile(ctx: AuthContext, id: string, purpose: FilePurpose, field: string) {
-  const f = await StoredFile.findOne({ _id: id, accountId: ctx.accountId, purpose }, { _id: 1 }).lean();
+  const f = await StoredFile.findOne({ _id: id, accountId: ownerOf(ctx), purpose }, { _id: 1 }).lean();
   if (!f) throw AppError.field(field, 'VAL-22');
 }

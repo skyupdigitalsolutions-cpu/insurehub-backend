@@ -77,7 +77,7 @@ export async function refreshCompletionFor(accountId: string, session: ClientSes
   if (acc && adv) await refreshCompletion(accountId, adv._id, acc, adv.name, session);
 }
 
-function view(acc: AccountDoc, user: { name: string; mobile: string }, activeInsurers: number) {
+function view(acc: AccountDoc, user: { name: string; mobile: string }, activeInsurers: number, categories: string[] = cfgList('CFG-115')) {
   const p = acc.profile!;
   const c = completion(p, user.name, activeInsurers);
   const missingText = c.missing.flatMap((g) => g.missing).join(', ');
@@ -95,7 +95,7 @@ function view(acc: AccountDoc, user: { name: string; mobile: string }, activeIns
       ...(c.percent < 100 ? { messageId: 'PRF-02', message: msg('PRF-02', { percent: c.percent, 'missing items': missingText }) } : {}),
     },
     licence: licenceState(p),
-    options: { advisorTypes: ADVISOR_TYPES, genders: ADVISOR_GENDERS, categories: cfgList('CFG-115') },
+    options: { advisorTypes: ADVISOR_TYPES, genders: ADVISOR_GENDERS, categories },
   };
 }
 
@@ -150,18 +150,29 @@ async function load(ctx: AuthContext) {
 
 export async function getProfile(ctx: AuthContext) {
   const { acc, user } = await load(ctx);
-  return view(acc, user, await activeInsurerCount(acc._id));
+  return view(acc, user, await activeInsurerCount(acc._id), await categoryChoices());
 }
 
 /**
  * Save ONE section (P-05 step 3). Only that section is validated and written; the write is conditional on
  * the section's version, so a second tab saving the same section gets GEN-05 and nothing is overwritten.
  */
+/** Categories an advisor may authorise: the starting types (CFG-115) and every ACTIVE insurance type in the catalogue. */
+export async function categoryChoices() {
+  const { InsuranceType } = await import('../catalogue/types.model.js');
+  const active = (await InsuranceType.find({ status: 'ACTIVE' }, { name: 1 }).sort({ name: 1 }).lean<Array<{ name: string }>>()).map((t) => t.name);
+  return [...new Set([...cfgList('CFG-115'), ...active])];
+}
+
 export async function saveSection(ctx: AuthContext, section: Section, body: Record<string, unknown>, req: Request) {
+  if (section === 'professional' && Array.isArray(body.categories)) {
+    const allowed = new Set(await categoryChoices());
+    if ((body.categories as string[]).some((c) => !allowed.has(c))) throw AppError.field('categories', 'VAL-22');
+  }
   const { acc, user } = await load(ctx);
   const version = body.version as number;
   const current = acc.profile?.sectionVersions?.[section] ?? 1;
-  if (version !== current) throw AppError.versionConflict('profile section', view(acc, user, await activeInsurerCount(acc._id)));
+  if (version !== current) throw AppError.versionConflict('profile section', view(acc, user, await activeInsurerCount(acc._id), await categoryChoices()));
 
   // Cross-field rules
   if (section === 'personal' && typeof body.dob === 'string' && ageOn(body.dob) < cfgNum('CFG-128')) {
@@ -205,5 +216,5 @@ export async function saveSection(ctx: AuthContext, section: Section, body: Reco
     return { updated, name, pct };
   });
 
-  return { profile: view(result.updated, { name: result.name, mobile: user.mobile }, await activeInsurerCount(acc._id)), percent: result.pct };
+  return { profile: view(result.updated, { name: result.name, mobile: user.mobile }, await activeInsurerCount(acc._id), await categoryChoices()), percent: result.pct };
 }
