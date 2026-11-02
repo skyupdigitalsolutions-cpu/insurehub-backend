@@ -56,6 +56,7 @@ async function linkVisible(ctx: AuthContext, type: string, id: string): Promise<
     case 'CUSTOMER': return !!(await Customer.exists({ _id: id, accountId: ctx.accountId }));
     case 'PROFILE': return id === ctx.accountId;
     case 'KYC_REVIEW': return ctx.role === 'STF' || ctx.role === 'ADM';
+    case 'RENEWAL': { const { RenewalCycle } = await import('../renewals/renewal.model.js'); return !!(await RenewalCycle.exists({ _id: id, accountId: ctx.accountId })); }
     default: return false;
   }
 }

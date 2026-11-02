@@ -61,6 +61,42 @@ export const CAPABILITIES = {
   /** Proposals (P-55): advisors and assistants prepare; only the advisor submits. */
   'proposals.prepare': ['ADV', 'AST'],
   'proposals.submit': ['ADV'],
+  /** Policies (P-33 to P-36): the advisor records and changes them; assistants can view. */
+  'policies.view': ['ADV', 'AST'],
+  'policies.manage': ['ADV'],
+  /** Renewals (P-38): assistants see the list; the advisor works them to an outcome. */
+  'renewals.view': ['ADV', 'AST'],
+  'renewals.manage': ['ADV'],
+  /** Communications (P-43): the advisor and assistants see messages; the advisor cancels and resends. */
+  'comms.view': ['ADV', 'AST'],
+  'comms.manage': ['ADV'],
+  /** Occasion greetings (P-40) and the WhatsApp wallet (P-56): the advisor. */
+  'greetings.manage': ['ADV'],
+  'wallet.manage': ['ADV'],
+  /** Message templates (P-39): SkyUp Staff drafts, a different Admin approves; Admin credits wallets (P-56). */
+  'templates.make': ['STF', 'ADM'],
+  'templates.approve': ['ADM'],
+  'wallet.credit': ['ADM'],
+  /** Referrers (P-44): the advisor; a referrer sees only their own link and referrals (P-45). */
+  'referrers.manage': ['ADV'],
+  'referral.self': ['REF'],
+  /** P-47 My plan and billing; P-52 export my data; P-57 give support access: the advisor. */
+  'billing.manage': ['ADV'],
+  'export.own': ['ADV'],
+  'support.give': ['ADV'],
+  /** P-49 configuration (ADM; a different ADM approves); P-51 accounts; P-47 offline payments; P-50 audit export. */
+  'config.manage': ['ADM'],
+  'accounts.admin': ['ADM'],
+  'audit.export': ['ADM'],
+  /** P-57: SkyUp opens client records only under an active grant. */
+  'support.use': ['STF', 'ADM'],
+  /** Calls from the mobile app: advisors and assistants sync and see calls; only the advisor plays recordings. */
+  'calls.sync': ['ADV', 'AST'],
+  'calls.view': ['ADV', 'AST'],
+  'calls.listen': ['ADV'],
+  /** Campaigns (Module 17): the advisor connects channels; assistants see imported leads and their form answers. */
+  'campaigns.manage': ['ADV'],
+  'campaigns.view': ['ADV', 'AST'],
   /** Brochures: advisors (own products, P-58 attachments) and SkyUp (P-23 OCR). */
   'brochure.upload': ['ADV', 'STF', 'ADM'],
   /** Suggest a correction to a verified product (P-58). */

@@ -7,7 +7,7 @@ import { newId } from '../../lib/ids.js';
  * (event + record + date): the unique index makes the same event twice create ONE item (AC-P10-2).
  * Items older than CFG-72 are removed by the sweep.
  */
-export const LINK_TYPES = ['TASK', 'LEAD', 'CUSTOMER', 'PROFILE', 'KYC_REVIEW'] as const;
+export const LINK_TYPES = ['TASK', 'LEAD', 'CUSTOMER', 'PROFILE', 'KYC_REVIEW', 'RENEWAL'] as const;
 
 const notificationSchema = new Schema(
   {

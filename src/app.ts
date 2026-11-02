@@ -27,6 +27,13 @@ import { bestFitRoutes } from './modules/bestfit/bestfit.routes.js';
 import { publicQuotationRoutes, quotationRoutes } from './modules/quotations/quotations.routes.js';
 import { comparisonRoutes, publicComparisonRoutes } from './modules/quotations/comparisons.routes.js';
 import { paymentRoutes, proposalRoutes, quotationPaymentRoutes } from './modules/payments/payments.routes.js';
+import { policyRoutes } from './modules/policies/policies.routes.js';
+import { renewalRoutes } from './modules/renewals/renewals.routes.js';
+import { adminCommsRoutes, commsRoutes, greetingRoutes, walletRoutes, webhookRoutes } from './modules/comms/comms.routes.js';
+import { publicReferralRoutes, referralSelfRoutes, referrerRoutes } from './modules/referrals/referrals.routes.js';
+import { callRoutes } from './modules/calls/calls.routes.js';
+import { campaignRoutes, hookRoutes, publicFormRoutes, websiteCors } from './modules/campaigns/campaigns.routes.js';
+import { adminRoutes, billingRoutes, exportRoutes, subscriptionWebhookRoutes, supportGrantRoutes, supportUseRoutes } from './modules/admin/admin.routes.js';
 import { correctionRoutes, ocrJobRoutes, adminProductRoutes, advisorPriceRoutes, referencePriceRoutes, approvalRoutes, catalogueInsurerRoutes, ownProductRoutes, productRoutes, productVersionRoutes, templateRoutes, typeRoutes } from './modules/catalogue/catalogue.routes.js';
 import { devRoutes } from './modules/dev/dev.routes.js';
 
@@ -54,6 +61,8 @@ export function createApp() {
     }),
   );
   app.use(helmet());
+  // Module 17: website forms post from the advisor's own site (any origin, no cookies, POST only)
+  app.use('/v1/hooks/website', websiteCors);
   app.use(
     cors({
       origin: (origin, cb) => cb(null, !origin || env.CORS_ORIGINS.includes(origin)),
@@ -62,7 +71,8 @@ export function createApp() {
     }),
   );
   app.use(cookieParser());
-  app.use(express.json({ limit: env.REQUEST_BODY_LIMIT }));
+  // The raw body is kept for webhook signatures (P-42, P-56: a forged webhook changes nothing).
+  app.use(express.json({ limit: env.REQUEST_BODY_LIMIT, verify: (req, _res, buf) => { (req as unknown as { rawBody?: Buffer }).rawBody = buf; } }));
 
   app.use('/health', healthRoutes());
 
@@ -96,6 +106,26 @@ export function createApp() {
   api.use('/quotations', quotationRoutes());
   api.use('/payments', paymentRoutes());
   api.use('/proposals', proposalRoutes());
+  api.use('/policies', policyRoutes());
+  api.use('/renewals', renewalRoutes());
+  api.use('/communications', commsRoutes());
+  api.use('/greetings', greetingRoutes());
+  api.use('/wallet', walletRoutes());
+  api.use('/admin/comms', adminCommsRoutes());
+  api.use('/webhooks', webhookRoutes());
+  api.use('/referrers', referrerRoutes());
+  api.use('/referral', referralSelfRoutes());
+  api.use('/public/r', publicReferralRoutes());
+  api.use('/call-logs', callRoutes());
+  api.use('/campaigns', campaignRoutes());
+  api.use('/hooks', hookRoutes());
+  api.use('/public/forms', publicFormRoutes());
+  api.use('/billing', billingRoutes());
+  api.use('/exports', exportRoutes());
+  api.use('/support-grants', supportGrantRoutes());
+  api.use('/support', supportUseRoutes());
+  api.use('/admin', adminRoutes());
+  api.use('/webhooks/subscription', subscriptionWebhookRoutes());
   api.use('/public/q', publicQuotationRoutes());
   api.use('/comparisons', comparisonRoutes());
   api.use('/public/c', publicComparisonRoutes());

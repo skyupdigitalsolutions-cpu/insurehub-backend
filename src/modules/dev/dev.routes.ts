@@ -60,6 +60,38 @@ export function devRoutes() {
     sendData(res, doc);
   });
 
+  // Communications test tools (Section 15): the provider test inbox, failure switch, signed webhooks, gateway payments, jobs.
+  r.get('/comms/inbox', async (_req, res) => sendData(res, (await import('../comms/comms.service.js')).devProvider.inbox));
+  r.post('/comms/fail-mode', async (req, res) => { (await import('../comms/comms.service.js')).devProvider.setFailMode(req.body?.mode ?? 'none'); sendData(res, { mode: req.body?.mode ?? 'none' }); });
+  r.post('/comms/send-now', async (_req, res) => sendData(res, await (await import('../comms/comms.service.js')).sendDue()));
+  r.post('/comms/run-greetings', async (_req, res) => sendData(res, await (await import('../comms/comms.service.js')).runGreetingJob()));
+  r.post('/comms/webhook', async (req, res) => { // signs a test event like the provider would, and delivers it
+    const c = await import('../comms/comms.service.js');
+    const body = { eventId: `dev_${Date.now()}_${Math.random().toString(36).slice(2)}`, ...req.body };
+    const fake = { headers: { 'x-bimayantra-signature': c.sign(JSON.stringify(body)) }, rawBody: Buffer.from(JSON.stringify(body)), body } as never;
+    sendData(res, await c.messageWebhook(fake));
+  });
+  r.post('/comms/pay', async (req, res) => { // the gateway confirming a recharge (the only way a wallet is credited)
+    const c = await import('../comms/comms.service.js');
+    const body = { eventId: `dev_${Date.now()}`, orderId: req.body?.orderId, paymentId: `pay_dev_${Date.now()}`, status: req.body?.status ?? 'captured' };
+    const fake = { headers: { 'x-bimayantra-signature': c.sign(JSON.stringify(body)) }, rawBody: Buffer.from(JSON.stringify(body)), body } as never;
+    sendData(res, await c.paymentWebhook(fake));
+  });
+
+  // P-47: the gateway confirming a subscription payment (signed), and SYS-05 now
+  r.post('/billing/pay', async (req, res) => {
+    const a = await import('../admin/admin.service.js');
+    const { SubscriptionOrder } = await import('../admin/admin.model.js');
+    const o = await SubscriptionOrder.findById(req.body?.orderId).lean<{ totalPaise: number }>();
+    const body = { eventId: `dev_${Date.now()}`, orderId: req.body?.orderId, paymentId: `pay_dev_${Date.now()}`, status: req.body?.status ?? 'captured', amountPaise: req.body?.amountPaise ?? o?.totalPaise ?? 0 };
+    const fake = { headers: { 'x-bimayantra-signature': a.devSign(body) }, rawBody: Buffer.from(JSON.stringify(body)), body } as never;
+    sendData(res, await a.subscriptionWebhook(fake));
+  });
+  r.post('/run-subscription-job', async (_req, res) => sendData(res, await (await import('../admin/admin.service.js')).runSubscriptionJob()));
+
+  // Run the daily renewal job (SYS-03) now, at the test clock's date (safe to repeat: AC-P37-1).
+  r.post('/run-renewal-job', async (_req, res) => sendData(res, await (await import('../renewals/renewals.service.js')).runRenewalJob()));
+
   // Extend an advisor account's trial (read-only mode, GR-33, starts when it ends). Plans and renewals are P-47.
   r.post('/extend-trial', async (req, res) => {
     const { User } = await import('../users/user.model.js');

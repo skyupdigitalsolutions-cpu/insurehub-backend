@@ -79,6 +79,11 @@ export async function share(ctx: AuthContext, id: string, channel: 'EMAIL' | 'WH
     ...(first ? { sharedAt: clock.now(), validUntil: addDays(istToday(), cfgNum('CFG-46')), status: rev.status === 'READY' ? 'SHARED' : rev.status } : {}),
   };
   const u = await setCurrent(q, patch, first && rev.status === 'READY' ? 'SHARED' : undefined);
+  if (channel === 'EMAIL') {
+    const adv = await User.findOne({ accountId: q.accountId, role: 'ADV' }, { name: 1, mobile: 1 }).lean<{ name: string; mobile: string }>();
+    await (await import('../comms/comms.service.js')).queueQuotationEmail({ accountId: q.accountId, customerId: customer._id, to: to!, quotationId: id, revision: rev.revision,
+      params: { 'customer name': customer.name, 'quotation number': `${q.number} R${rev.revision}`, link: `${process.env.PUBLIC_APP_URL ?? 'http://localhost:5173'}/q/${token}`, 'advisor name': adv?.name ?? '', 'advisor mobile': adv?.mobile ?? '' } });
+  }
   await audit({ entity: 'quotation', entityId: id, action: 'QUOTATION_SHARED', after: { channel, revision: rev.revision, first } }, { req });
   const link = `${process.env.PUBLIC_APP_URL ?? 'http://localhost:5173'}/q/${token}`;
   const out = { quotation: quotationView(u), link, pdfFileId: rev.pdfFileId };

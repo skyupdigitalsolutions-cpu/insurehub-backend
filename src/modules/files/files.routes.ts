@@ -20,7 +20,10 @@ const UPLOAD_CAPABILITY = {
   APPOINTMENT_LETTER: 'insurers.manage',
   CUSTOMER_DOCUMENT: 'documents.work', // P-18: advisors AND assistants
   BROCHURE: 'brochure.upload', // P-22 own products (ADV); P-23 OCR and P-58 attachments
-  QUOTATION_PDF: 'files.system', // built by the server on Generate (P-27); never uploaded
+  QUOTATION_PDF: 'files.system',
+  POLICY_DOCUMENT: 'policies.manage',
+  ACCOUNT_EXPORT: 'files.system',
+  CALL_RECORDING: 'files.system', // uploaded only through /call-logs/recording (multipart, content-checked) // built by the server (P-52); never uploaded // P-33 policy PDF, P-35 endorsement documents // built by the server on Generate (P-27); never uploaded
 } as const satisfies Record<(typeof FILE_PURPOSES)[number], Capability>;
 
 export function fileRoutes() {

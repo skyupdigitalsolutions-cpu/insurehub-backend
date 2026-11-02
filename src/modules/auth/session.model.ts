@@ -2,7 +2,7 @@ import { Schema, model, type InferSchemaType } from 'mongoose';
 import { newId } from '../../lib/ids.js';
 
 export const END_REASONS = ['LOGOUT', 'ENDED_BY_USER', 'SUPERSEDED', 'IDLE', 'EXPIRED', 'REFRESH_REUSE', 'USER_DISABLED',
-  'ROLE_CHANGED', 'MOBILE_CHANGED', 'ACCOUNT_SUSPENDED'] as const;
+  'ROLE_CHANGED', 'MOBILE_CHANGED', 'ACCOUNT_SUSPENDED', 'ACCOUNT_CLOSED'] as const;
 export type EndReason = (typeof END_REASONS)[number];
 
 /**

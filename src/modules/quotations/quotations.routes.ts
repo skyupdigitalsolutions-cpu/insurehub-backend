@@ -24,6 +24,7 @@ const inputs = z.object({
   discount: z.object({ kind: required(enumOf(['AMOUNT', 'PERCENT'] as const)), value: z.number().min(0).max(10_000_000), reference: z.string().max(200).default('') }).strict().nullable().optional(),
   manual: z.object({ netPremium: rupees().optional(), taxAmount: rupees({ allowZero: true }).optional() }).strict().nullable().optional(),
   paymentLink: optional(shortText()),
+  renewalOf: z.string().regex(/^pol_[a-f0-9]{28}$/).nullable().optional(),
 }).strict();
 
 /** Quotations (P-27). */

@@ -10,7 +10,32 @@ import { cloudinaryStorage, localStorage, storage } from './storage.js';
 
 const backendOf = (name: string | null | undefined) => (name === 'cloudinary' ? cloudinaryStorage : localStorage);
 
-type Detected = { type: 'PDF' | 'JPG' | 'PNG'; mime: string };
+type Detected = { type: 'PDF' | 'JPG' | 'PNG' | 'ZIP' | 'AUDIO'; mime: string };
+
+/** Call recordings: the audio format from the file's own bytes, never the name or the declared type. */
+export function detectAudio(b: Buffer): { ext: string; mime: string } | null {
+  if (b.length < 12) return null;
+  const head = (n: number, at = 0) => b.subarray(at, at + n).toString('latin1');
+  if (head(3) === 'ID3') return { ext: 'mp3', mime: 'audio/mpeg' };
+  if (head(4, 4) === 'ftyp') { const brand = head(4, 8).toLowerCase(); return brand.startsWith('3g') ? { ext: '3gp', mime: 'audio/3gpp' } : { ext: 'm4a', mime: 'audio/mp4' }; }
+  if (head(5) === '#!AMR') return { ext: 'amr', mime: 'audio/amr' };
+  if (head(4) === 'RIFF' && head(4, 8) === 'WAVE') return { ext: 'wav', mime: 'audio/wav' };
+  if (head(4) === 'OggS') return { ext: 'ogg', mime: 'audio/ogg' };
+  if (b[0] === 0xff && (b[1]! & 0xf6) === 0xf0) return { ext: 'aac', mime: 'audio/aac' }; // ADTS AAC
+  if (b[0] === 0xff && (b[1]! & 0xe0) === 0xe0) return { ext: 'mp3', mime: 'audio/mpeg' }; // MPEG audio frame
+  return null;
+}
+
+/** Files only the server writes (exports, recordings): content already checked by the caller. */
+export async function storeServerFile(ctx: AuthContext, purpose: FilePurpose, bytes: Buffer, name: string, type: Detected['type'], mime: string) {
+  const ownerKey = ownerOf(ctx);
+  if (!ownerKey) throw AppError.forbidden();
+  const rec = new StoredFile({ accountId: ownerKey, uploadedBy: ctx.userId, purpose, type, mime, size: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex'), name: name.replace(/[^\w.-]/g, '_').slice(0, 120) || 'file', storageKey: 'pending' });
+  rec.storageKey = `${ownerKey.toLowerCase()}/${rec._id}`;
+  await storage.put(rec.storageKey, bytes);
+  await rec.save();
+  return { id: rec._id as string, type, size: bytes.length, name: rec.name };
+}
 
 /** FLD-22 "checked by content": the type comes from the bytes, never from the name or the browser. */
 export function detectType(b: Buffer): Detected | null {
@@ -55,6 +80,11 @@ export async function upload(ctx: AuthContext, purpose: FilePurpose, bytes: Buff
   const list = cfgList(image ? 'CFG-126' : 'CFG-26');
   const maxMb = cfgNum(image ? 'CFG-127' : purpose === 'BROCHURE' ? 'CFG-29' : 'CFG-27'); // CFG-29: brochures
 
+  // P-52: the server's own account export (a ZIP). Only the server writes this purpose (files.system); uploads never can.
+  if (purpose === 'ACCOUNT_EXPORT') {
+    if (!(bytes.length > 4 && bytes.readUInt32LE(0) === 0x04034b50)) throw AppError.field('file', 'VAL-26');
+    return storeServerFile(ctx, purpose, bytes, fileName ?? 'export.zip', 'ZIP', 'application/zip');
+  }
   const detected = detectType(bytes);
   if (!detected || !allowedTypes(list).has(detected.type)) {
     throw AppError.field('file', 'VAL-23', { 'allowed types': list.join(', ') });
@@ -85,7 +115,8 @@ export const view = (f: FileDoc) => ({ id: f._id, purpose: f.purpose, type: f.ty
 export async function open(ctx: AuthContext, id: string, req: Request) {
   const f = await StoredFile.findById(id).lean<FileDoc>();
   const kyc = !!f && KYC_PURPOSES.includes(f.purpose as FilePurpose);
-  const owner = !!f && f.accountId === ownerOf(ctx) && (ctx.role === 'ADV' || (ctx.role === 'AST' && !kyc) || f.accountId === 'SKYUP');
+  const advisorOnly = !!f && f.purpose === 'CALL_RECORDING';
+  const owner = !!f && f.accountId === ownerOf(ctx) && (ctx.role === 'ADV' || (ctx.role === 'AST' && !kyc && !advisorOnly) || f.accountId === 'SKYUP');
   const reviewer = !!f && kyc && (ctx.role === 'STF' || ctx.role === 'ADM');
   if (!f || !(owner || reviewer)) throw AppError.notFound();
   if (reviewer) await audit({ entity: 'file', entityId: f._id, action: 'KYC_FILE_VIEWED', after: { accountId: f.accountId, purpose: f.purpose } }, { req });

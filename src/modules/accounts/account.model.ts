@@ -20,8 +20,14 @@ const accountSchema = new Schema(
       status: { type: String, enum: ['TRIAL', 'ACTIVE', 'GRACE', 'EXPIRED'], required: true },
       startsAt: { type: Date, required: true },
       endsAt: { type: Date, required: true },
+      cycle: { type: String, enum: ['MONTHLY', 'YEARLY', null], default: null },
+      nextPlan: { type: String, enum: ['NORMAL', null], default: null }, // P-47 downgrade at period end
+      waNumber: { type: Schema.Types.Mixed, default: null }, // P-47 Premium: { status, number, startedAt }
     },
+    retainUntil: { type: Date, default: null }, // P-51 close / P-47 archive
     wallet: { balancePaise: { type: Number, default: 0, min: 0 } },
+    /** P-40 occasion greetings: the switch, the template per occasion and excluded people. */
+    greetings: { on: { type: Boolean, default: false }, templates: { type: Schema.Types.Mixed, default: {} }, excluded: { type: [String], default: [] } },
     profile: {
       kycStatus: { type: String, enum: ['NOT_SUBMITTED', 'PENDING_REVIEW', 'VERIFIED', 'REJECTED'], default: 'NOT_SUBMITTED' },
       completionPct: { type: Number, default: 0 },

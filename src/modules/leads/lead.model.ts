@@ -37,6 +37,8 @@ const leadSchema = new Schema(
     referrerUserId: { type: String, default: null },
     referredByCustomerId: { type: String, default: null },
     campaign: { type: String, default: null },
+    /** Module 17: where an imported lead came from (channel, connection, form, the platform's lead ID). */
+    adRef: { type: Schema.Types.Mixed, default: null },
     interests: { type: [String], default: [] },
     priority: { type: String, enum: PRIORITIES, default: 'MEDIUM' },
     nextFollowUpAt: { type: Date, default: null },

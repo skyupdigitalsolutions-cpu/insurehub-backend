@@ -25,6 +25,8 @@ export interface Inputs {
   answers?: Record<string, string | number | boolean>; riders?: string[];
   override?: { amount: number; reason: string } | null; discount?: { kind: 'AMOUNT' | 'PERCENT'; value: number; reference: string } | null;
   manual?: { netPremium?: number; taxAmount?: number } | null; paymentLink?: string | null;
+  /** P-38: the policy this quotation renews (allowed even when its product is now WITHDRAWN). */
+  renewalOf?: string | null;
 }
 type Problem = { field: string; messageId: MessageId; params?: Record<string, string | number> };
 const CHILD = /^(son|daughter|child|grandson|granddaughter)$/i;
@@ -77,7 +79,7 @@ function check(ctx: AuthContext, c: Ctx, i: Inputs, upTo: number): Problem[] {
     const name = c.data.name ?? c.product?.code ?? 'This product';
     if (!c.product || !c.version) p.push({ field: 'productId', messageId: 'GEN-01', params: { 'Field label': 'Product' } });
     else if (c.product.typeId !== i.typeId || c.product.insurerId !== i.insurerId) p.push({ field: 'productId', messageId: 'VAL-22' });
-    else if (effectiveStatus(c.product) !== 'ACTIVE') p.push({ field: 'productId', messageId: 'QT-11', params: { Product: name } });
+    else if (effectiveStatus(c.product) !== 'ACTIVE' && !(i.renewalOf && effectiveStatus(c.product) === 'WITHDRAWN')) p.push({ field: 'productId', messageId: 'QT-11', params: { Product: name } });
     else if (c.data.pricingMode === 'RATE_TABLE' && !c.price) p.push({ field: 'productId', messageId: 'QT-07', params: { Product: name } });
   }
   if (at(6)) {

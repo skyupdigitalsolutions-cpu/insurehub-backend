@@ -122,7 +122,7 @@ describe('P-55 proposals', () => {
     let p = st.body.data;
     expect(p.members).toHaveLength(1);
     const r1 = (await w.A.get(`/proposals/${p.id}`)).body.data.readiness.problems.map((x: { messageId: string }) => x.messageId);
-    expect(r1).toEqual(expect.arrayContaining(['PRP-02', 'POL-13', 'PRP-04', 'PAY-18']));
+    expect(r1).toEqual(expect.arrayContaining(['PRP-02', 'PRP-04', 'PAY-18']));
     const yes = { answer: true, condition: 'Diabetes', since: '2019', treatment: 'Metformin' };
     const no = { answer: false };
     p = (await w.A.put(`/proposals/${p.id}`, { version: p.version, declarations: [{ member: 'Meena Iyer', answers: { 'Pre-existing disease': yes, 'Current medicines': no, 'Hospital stay in the last 4 years': no, Tobacco: no, Alcohol: no } }],

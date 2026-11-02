@@ -37,6 +37,16 @@ export async function runSweep(now = clock.now()) {
   const { expireDue } = await import('../quotations/lifecycle.service.js');
   const expired = await expireDue();
   await (await import('../quotations/comparisons.service.js')).expireComparisons();
+  // SYS-03: the daily renewal job, once per IST day after CFG-63
+  await (await import('../renewals/renewals.service.js')).maybeRunDaily(now);
+  // SYS-04 greetings once a day after CFG-65; SYS-08 the sender every minute (WhatsApp only inside CFG-64)
+  const comms = await import('../comms/comms.service.js');
+  await comms.maybeRunGreetings(now);
+  await comms.sendDue(now);
+  // P-45: REF-08 to referrers when a referral's status changes
+  await (await import('../referrals/referrals.service.js')).refreshShownStatuses();
+  // SYS-05 subscriptions (once a day) and SYS-14 support-grant expiry
+  await (await import('../admin/admin.service.js')).maybeRunSubscriptionJob(now);
   return { reminders, removed, expired };
 }
 

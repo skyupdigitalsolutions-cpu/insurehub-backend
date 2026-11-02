@@ -86,7 +86,7 @@ function nomineeProblems(ns: Nominee[], holder: Member, max: number, final: bool
     }
   });
   const total = Math.round(ns.reduce((t, n) => t + n.share, 0) * 100) / 100;
-  if (final && total !== cfgNum('CFG-54')) p.push({ field: 'nominees', messageId: 'POL-13', params: { 'CFG-54': cfgNum('CFG-54'), total } });
+  if (final && ns.length && total !== cfgNum('CFG-54')) p.push({ field: 'nominees', messageId: 'POL-13', params: { 'CFG-54': cfgNum('CFG-54'), total } });
   return p;
 }
 
@@ -136,7 +136,11 @@ export async function submit(ctx: AuthContext, id: string, b: { version: number 
   const snap = await snapOf(p);
   const paid = await paidFor(p.quotationId);
   const out = await withTx(async (session) => {
-    const [pol] = await Policy.create([{ accountId: ctx.accountId, customerId: p.customerId, proposalId: id, quotationId: p.quotationId, frozen: {
+    const q = await Quotation.findById(p.quotationId).lean<QuotationDoc>();
+    const qInputs = (q!.revisions.find((r) => r.revision === p.revision)!.snapshot as { inputs: { typeId: string; sumInsured: number; people: string[] } }).inputs;
+    const [pol] = await Policy.create([{ accountId: ctx.accountId, customerId: p.customerId, proposalId: id, quotationId: p.quotationId, createdBy: ctx.userId,
+      insurerId: snap.insurer.id, productId: snap.product.id, productName: snap.product.name, typeId: qInputs.typeId, sumInsured: qInputs.sumInsured, premium: paid!.amount,
+      insured: (p.members as Member[]).map((m, i) => ({ key: qInputs.people[i] ?? null, name: m.name, relationship: m.relationship, dob: m.dob })), frozen: {
       members: p.members, declarations: p.declarations, nominees: p.nominees, product: snap.product, insurer: snap.insurer, premium: snap.breakdown.final,
       payment: { id: paid!._id, amount: paid!.amount, mode: paid!.mode, date: paid!.paymentDate }, quotation: `${snap.number}`, proposal: p.number,
     } }], { session: session ?? undefined });

@@ -7,6 +7,8 @@ import { pageMeta, pageQuery, pageSize } from '../../lib/pagination.js';
 import { sendData } from '../../lib/response.js';
 import { User } from '../users/user.model.js';
 import { AuditLog } from './audit.model.js';
+import { requireStepUp } from '../auth/stepUp.js';
+import { audit } from './audit.service.js';
 
 const query = z.object({
   ...pageQuery,
@@ -44,6 +46,21 @@ export function auditRoutes() {
       actorRole: i.actorRole, entity: i.entity, entityId: i.entityId, entityRef: i.entityRef, action: i.action, result: i.result, requestId: i.requestId,
       ...(ctx.role === 'STF' ? {} : { before: i.before, after: i.after }),
     })), 200, pageMeta(q.page, limit, total));
+  });
+  r.get('/export', authenticate, allow('audit.export'), requireStepUp, validate({ query }), async (req, res) => {
+    const q = res.locals.query as z.infer<typeof query>;
+    const filter: Record<string, unknown> = {};
+    if (q.accountId) filter.accountId = q.accountId;
+    for (const k of ['actorUserId', 'entity', 'entityId', 'action'] as const) if (q[k]) filter[k] = q[k];
+    if (q.from || q.to) filter.at = { ...(q.from ? { $gte: new Date(q.from) } : {}), ...(q.to ? { $lte: new Date(q.to) } : {}) };
+    const items = await AuditLog.find(filter).sort({ at: -1 }).limit(50_000).lean();
+    const esc = (v: unknown) => { const s = v === null || v === undefined ? '' : typeof v === 'object' ? JSON.stringify(v) : String(v); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+    const cols = ['at', 'accountId', 'actorUserId', 'actorRole', 'entity', 'entityId', 'entityRef', 'action', 'result', 'before', 'after'] as const;
+    const body = [cols.join(','), ...items.map((i) => cols.map((c) => esc(c === 'at' ? (i.at as Date).toISOString() : (i as Record<string, unknown>)[c])).join(','))].join('\n');
+    await audit({ entity: 'audit', action: 'AUDIT_EXPORTED', after: { filter, rows: items.length } }, { req });
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="audit.csv"');
+    res.end(body);
   });
   return r;
 }

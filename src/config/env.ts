@@ -52,6 +52,13 @@ const schema = z.object({
   MSG91_AUTH_KEY: z.string().optional(),
   MSG91_OTP_TEMPLATE_ID: z.string().optional(),
 
+  // Communications (Section 15). 'dev' keeps messages in a test inbox and simulates provider callbacks (non-production
+  // only). Real providers plug in behind the same interface. Webhooks are signed with WEBHOOK_SECRET (HMAC-SHA256).
+  WHATSAPP_PROVIDER: z.enum(['dev']).default('dev'),
+  EMAIL_PROVIDER: z.enum(['dev']).default('dev'),
+  PAYMENT_GATEWAY: z.enum(['dev']).default('dev'),
+  WEBHOOK_SECRET: z.string().min(16).default('dev-webhook-secret-change-me'),
+
   // Test tools: SMS inbox, test clock, configuration overrides (NFR-13). Never on in production.
   DEV_TOOLS: bool.default('false'),
   // Private file storage (KYC documents, photos, logos, PDFs).
@@ -111,6 +118,8 @@ if (e.FILE_STORAGE === 'cloudinary' && !(e.CLOUDINARY_CLOUD_NAME && e.CLOUDINARY
 }
 if (e.NODE_ENV === 'production') {
   if (e.SMS_PROVIDER === 'dev') fatal('SMS_PROVIDER=dev is not allowed in production.');
+  if (e.WHATSAPP_PROVIDER === 'dev' || e.EMAIL_PROVIDER === 'dev' || e.PAYMENT_GATEWAY === 'dev') fatal('WHATSAPP_PROVIDER, EMAIL_PROVIDER and PAYMENT_GATEWAY must be real providers in production.');
+  if (e.WEBHOOK_SECRET === 'dev-webhook-secret-change-me') fatal('Set WEBHOOK_SECRET in production.');
   if (e.DEV_TOOLS) fatal('DEV_TOOLS must be false in production.');
   if (e.FILE_STORAGE === 'local') fatal('FILE_STORAGE=local keeps files on one server disk and is not allowed in production. Use FILE_STORAGE=cloudinary.');
   if (e.CLOUDINARY_FOLDER.endsWith('-dev')) fatal('CLOUDINARY_FOLDER must be a production folder (not "-dev") in production.');
