@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { cfgList, cfgNum, cfgRange } from '../../config/cfg.js';
 import { INDIAN_STATES } from '../../lib/fields.js';
+import { LEAD_SOURCE_CODES, LEAD_SOURCES, isSourceCode } from '../../lib/leadSources.js';
 import { sendData } from '../../lib/response.js';
 import { CONTACT_OUTCOMES, OUTCOME_LABEL, PRIORITIES } from '../leads/lead.model.js';
 import { LEAD_STATUSES, STATUS_LABEL } from '../leads/leadStatus.js';
@@ -13,7 +14,11 @@ import { DEACTIVATION_REASONS, GENDERS, HOW_GIVEN, PREFERRED_CONTACTS } from '..
 export function referenceRoutes() {
   const r = Router();
   r.get('/', (_req, res) => sendData(res, {
-    leadSources: cfgList('CFG-133'),
+    // Change #17: older clients read the labels; new clients use the codes and their rules.
+    leadSources: cfgList('CFG-133').filter(isSourceCode).map((c) => LEAD_SOURCES[c].label),
+    leadSourceOptions: cfgList('CFG-133').filter(isSourceCode).map((c) => ({ code: c, label: LEAD_SOURCES[c].label, needs: LEAD_SOURCES[c].needs, campaignName: LEAD_SOURCES[c].campaignName })),
+    /** Every code with its label, including retired and import-only ones, for filters and showing old leads. */
+    allLeadSources: LEAD_SOURCE_CODES.map((c) => ({ code: c, label: LEAD_SOURCES[c].label, retired: 'legacy' in LEAD_SOURCES[c] })),
     lostReasons: cfgList('CFG-33'),
     relationships: cfgList('CFG-36'),
     insuranceTypes: cfgList('CFG-115'),

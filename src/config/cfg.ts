@@ -1,5 +1,6 @@
 import { Schema, model } from 'mongoose';
 import { logger } from '../lib/logger.js';
+import { DEFAULT_OFFERED_SOURCES, offeredSourcesProblem } from '../lib/leadSources.js';
 
 /**
  * CONFIGURATION SERVICE (Section 3.4–3.6, NFR-13: "All CFG values are read from one configuration service").
@@ -175,12 +176,8 @@ const DEFS = {
   'CFG-122': { label: 'Referrer invitation valid for', unit: 'days', value: 7, change: 'ADM', range: [1, 90] },
   'CFG-123': { label: 'Idle logout warning shown before logout', unit: 'minutes', value: 2, change: 'ADM', range: [1, 30] },
   'CFG-130': { label: 'Items in dashboard task and activity lists', unit: 'count', value: 10, change: 'ADM', range: [1, 100] },
-  'CFG-133': {
-    label: 'Lead source list',
-    value: ['Referred by a client', 'Referred by a referrer', 'Walk-in or personal contact', 'Paid ads', 'Campaign',
-      'Social media', 'Website', 'Other', 'Meta Ads', 'Google Ads', 'LinkedIn Ads', 'Website form'],
-    change: 'ADM',
-  },
+  // Change #17: stable CODES offered on the new-lead form, in screen order (labels in lib/leadSources.ts).
+  'CFG-133': { label: 'Lead sources offered for a new lead (codes, in order)', value: DEFAULT_OFFERED_SOURCES, change: 'ADM' },
   'CFG-158': { label: 'Assistant users per Premium account', unit: 'count', value: 2, change: 'ADM', range: [0, 50] },
   'CFG-169': { label: 'Lead pipelines created at sign-up', value: ['Health', 'Motor', 'Life and Term', 'Travel', 'Other'], change: 'ADM' },
   'CFG-170': { label: 'Stages in every pipeline', value: ['New', 'Contacted', 'Qualified', 'Follow-up', 'Converted', 'Lost'], change: 'Release' },
@@ -216,6 +213,7 @@ export function listCfg() {
 
 /** Checks a proposed value has the same shape as the default and sits inside the allowed range. */
 export function validateCfgValue(id: CfgId, value: unknown): string | null {
+  if (id === 'CFG-133') return offeredSourcesProblem(value);
   const d: CfgDef = DEFS[id];
   if (typeof d.value === 'object' && !Array.isArray(d.value)) {
     const v = value as Partial<CfgRange> | null;

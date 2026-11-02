@@ -212,7 +212,7 @@ export async function submit(code: string, b: SubmitBody, ip: string) {
       const number = await nextNumber(accountId, 'lead', session);
       const now = clock.now();
       const [lead] = await Lead.create([{ accountId, number, pipelineId, name: b.name, nameKey: b.name.trim().toLowerCase().replace(/\s+/g, ' '), mobile: b.mobile, email: b.email ?? null,
-        source: 'Referred by a referrer', referrerUserId: l.ref._id, interests: [b.interest], notes: [b.message, b.city ? `City: ${b.city}` : null, `Knows the referrer as: ${b.relation}`].filter(Boolean).join('\n'),
+        source: 'Referred by a referrer', sourceCode: 'REFERRED_BY_REFERRER', referrerUserId: l.ref._id, interests: [b.interest], notes: [b.message, b.city ? `City: ${b.city}` : null, `Knows the referrer as: ${b.relation}`].filter(Boolean).join('\n'),
         status: 'NEW', isOpen: true, createdBy: l.ref._id, stageHistory: [{ from: null, to: 'NEW', by: l.ref._id, at: now }] }], { session: session ?? undefined });
       leadId = lead!._id as string;
       await Consent.create([{ accountId, personKey: `L:${leadId}`, channel: 'WHATSAPP', status: 'GIVEN', address: b.mobile, howGiven: 'Ticked on referral form', recordedBy: l.ref._id, recordedAt: now }], { session: session ?? undefined });

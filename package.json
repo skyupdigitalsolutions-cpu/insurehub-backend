@@ -17,7 +17,8 @@
     "test:watch": "vitest",
     "db:indexes": "tsx --env-file=.env src/scripts/sync-indexes.ts",
     "storage:check": "tsx --env-file=.env src/scripts/storage-check.ts",
-    "ocr:check": "tsx --env-file=.env src/scripts/ocr-check.ts"
+    "ocr:check": "tsx --env-file=.env src/scripts/ocr-check.ts",
+    "db:migrate:lead-sources": "tsx --env-file=.env src/scripts/migrate-lead-source-codes.ts"
   },
   "dependencies": {
     "@google-cloud/documentai": "10.2.0",

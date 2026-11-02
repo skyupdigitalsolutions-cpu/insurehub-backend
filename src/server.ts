@@ -4,6 +4,7 @@ import { loadConfigOverrides, startConfigRefresh, stopConfigRefresh } from './co
 import { logger } from './lib/logger.js';
 import { connectMongo, disconnectMongo, findStaleIndexes } from './lib/mongo.js';
 import { startSweep, stopSweep } from './modules/notifications/sweep.js';
+import { loadFlags, startFlagRefresh, stopFlagRefresh } from './modules/flags/flags.js';
 import { disconnectRedis, redisCache } from './lib/redis.js';
 
 async function main() {
@@ -21,6 +22,8 @@ async function main() {
   await redisCache().ping();
   await loadConfigOverrides();
   startConfigRefresh();
+  await loadFlags();
+  startFlagRefresh();
   if (env.SMS_PROVIDER === 'dev') logger.warn('SMS_PROVIDER=dev: OTP messages go to the test inbox (GET /v1/dev/sms), not to phones.');
   startSweep(); // DSH-11 reminders and bell clean-up, every minute
 
@@ -31,6 +34,7 @@ async function main() {
   const shutdown = (signal: string) => {
     logger.info({ signal }, 'Shutting down');
     stopConfigRefresh();
+    stopFlagRefresh();
     server.close(async () => {
       await Promise.allSettled([disconnectMongo(), disconnectRedis()]);
       process.exit(0);

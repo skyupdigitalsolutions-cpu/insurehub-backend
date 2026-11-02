@@ -123,12 +123,13 @@ describe('P-13 Work a lead', () => {
 describe('P-14 Convert a lead', () => {
   it('AC-P14-1/2/4: creates one customer with the lead\'s source (LD-10); a converted lead is closed (LD-08, GEN-04)', async () => {
     const { c, create } = await setup();
-    const l = (await create({ source: 'Paid ads', nextFollowUpAt: tomorrow() })).body.data;
+    // Change #17: "Paid ads" is retired for new leads, so the copied source is checked with Meta Ads and its ad name.
+    const l = (await create({ source: 'Meta Ads', campaign: 'Diwali family floater', nextFollowUpAt: tomorrow() })).body.data;
     const r = await c.post(`/leads/${l.id}/convert`, { version: 1, mode: 'CREATE', customer: { city: 'Mysuru', state: 'Karnataka' } });
     expect(r.status).toBe(200);
     expect(r.body.meta.message).toBe(`Customer CU-000001 created from lead ${l.number}.`);
     const cus = await Customer.findById(r.body.data.customer.id).lean();
-    expect(cus).toMatchObject({ source: 'Paid ads', leadId: l.id, address: { city: 'Mysuru', state: 'Karnataka' } });
+    expect(cus).toMatchObject({ source: 'Meta Ads', sourceCode: 'META_ADS', leadId: l.id, address: { city: 'Mysuru', state: 'Karnataka' } });
     expect(await Task.countDocuments({ linkedId: l.id, status: 'OPEN' })).toBe(0);
     expect(err(await c.patch(`/leads/${l.id}`, { version: 2, notes: 'x' }))).toMatchObject({ status: 409, messageId: 'LD-08' });
     expect(err(await c.post(`/leads/${l.id}/convert`, { version: 2, mode: 'CREATE' }))).toMatchObject({ status: 409, messageId: 'GEN-04' });

@@ -1,6 +1,8 @@
 import type { Request } from 'express';
 import type { ClientSession } from 'mongoose';
+import { cfgList } from '../../config/cfg.js';
 import { AppError } from '../../lib/errors.js';
+import { isSourceCode, sourceCodeOf, sourceDef, sourceLabel, type LeadSourceCode } from '../../lib/leadSources.js';
 import { clock } from '../../lib/clock.js';
 import { nameKey } from '../../lib/fields.js';
 import { newId } from '../../lib/ids.js';
@@ -23,15 +25,17 @@ import { CONVERTIBLE, STATUS_LABEL, advisorOnly, allowedMoves, canConvert, canMo
 
 type FieldErr = { field: string; messageId: MessageId; params?: MessageParams };
 const RECORD = 'lead';
-const SOURCE_REFERRER = 'Referred by a referrer';
-const SOURCE_CLIENT = 'Referred by a client';
-const SOURCE_CAMPAIGN = 'Campaign';
+
+/** The lead's source code: stored, or worked out from the label on rows saved before the change-#17 migration. */
+export const codeOfLead = (l: Pick<LeadDoc, 'source' | 'sourceCode'>) => (isSourceCode(l.sourceCode) ? l.sourceCode : sourceCodeOf(l.source));
+/** CFG-133: the codes offered for a new lead (or as a corrected source). */
+export const offeredSources = () => cfgList('CFG-133').filter(isSourceCode);
 
 // ── Views ────────────────────────────────────────────────────────────────────
 
 function summary(l: LeadDoc, ctx: AuthContext) {
   return {
-    id: l._id, number: l.number, pipelineId: l.pipelineId, name: l.name, mobile: l.mobile, source: l.source, priority: l.priority,
+    id: l._id, number: l.number, pipelineId: l.pipelineId, name: l.name, mobile: l.mobile, source: l.source, sourceCode: codeOfLead(l), priority: l.priority,
     status: l.status, statusLabel: STATUS_LABEL[l.status as LeadStatus], nextFollowUpAt: l.nextFollowUpAt, customerId: l.customerId,
     createdAt: l.createdAt, version: l.version,
     allowedMoves: allowedMoves(l.status as LeadStatus, ctx.role), canConvert: canConvert(l.status as LeadStatus, ctx.role),
@@ -65,7 +69,7 @@ async function detail(l: LeadDoc, ctx: AuthContext) {
 }
 
 const snapshot = (l: Partial<LeadDoc>) => ({
-  name: l.name, mobile: l.mobile, altMobile: l.altMobile, email: l.email, source: l.source, referrerUserId: l.referrerUserId,
+  name: l.name, mobile: l.mobile, altMobile: l.altMobile, email: l.email, source: l.source, sourceCode: l.sourceCode, referrerUserId: l.referrerUserId,
   referredByCustomerId: l.referredByCustomerId, campaign: l.campaign, pipelineId: l.pipelineId, priority: l.priority, status: l.status,
   nextFollowUpAt: l.nextFollowUpAt,
 });
@@ -107,23 +111,27 @@ function applyDuplicateRule(d: Awaited<ReturnType<typeof findLeadDuplicates>>, c
   });
 }
 
-/** Source rules on the final state (P-12): referrer, referring client and campaign belong to their source only. */
-async function resolveSource(accountId: string, s: { source: string; referrerId?: string | null; referredByCustomerId?: string | null; campaign?: string | null }) {
+/**
+ * Source rules on the final state (P-12, change #17), keyed on the stable code: a referrer, a referring client and a
+ * campaign name belong to their source only. "Campaign" requires the name; Meta, Google and LinkedIn Ads keep an
+ * optional "Ad or campaign name"; every other source clears it.
+ */
+async function resolveSource(accountId: string, s: { sourceCode: LeadSourceCode; referrerId?: string | null; referredByCustomerId?: string | null; campaign?: string | null }) {
   const errs: FieldErr[] = [];
-  const out = { source: s.source, referrerUserId: null as string | null, referredByCustomerId: null as string | null, campaign: null as string | null };
-  if (s.source === SOURCE_REFERRER) {
+  const def = sourceDef(s.sourceCode);
+  const out = { source: sourceLabel(s.sourceCode), sourceCode: s.sourceCode, referrerUserId: null as string | null, referredByCustomerId: null as string | null, campaign: null as string | null };
+  if (def.needs === 'REFERRER') {
     if (!s.referrerId) errs.push({ field: 'referrerId', messageId: 'GEN-01', params: { 'Field label': 'Referrer' } });
     else if (!(await User.exists({ _id: s.referrerId, accountId, role: 'REF', status: 'ACTIVE' }))) errs.push({ field: 'referrerId', messageId: 'VAL-22' });
     else out.referrerUserId = s.referrerId;
-  } else if (s.source === SOURCE_CLIENT) {
+  } else if (def.needs === 'CLIENT') {
     // "chosen from the advisor's registered customers only, free text is not allowed"
     if (!s.referredByCustomerId) errs.push({ field: 'referredByCustomerId', messageId: 'GEN-01', params: { 'Field label': 'Referred by client' } });
     else if (!(await Customer.exists({ _id: s.referredByCustomerId, accountId, status: 'ACTIVE' }))) errs.push({ field: 'referredByCustomerId', messageId: 'VAL-22' });
     else out.referredByCustomerId = s.referredByCustomerId;
-  } else if (s.source === SOURCE_CAMPAIGN) {
-    if (!s.campaign) errs.push({ field: 'campaign', messageId: 'GEN-01', params: { 'Field label': 'Campaign name' } });
-    else out.campaign = s.campaign;
   }
+  if (def.campaignName === 'REQUIRED' && !s.campaign) errs.push({ field: 'campaign', messageId: 'GEN-01', params: { 'Field label': 'Campaign name' } });
+  else if (def.campaignName) out.campaign = s.campaign ?? null;
   return { out, errs };
 }
 
@@ -162,12 +170,19 @@ export async function listPipelines(ctx: AuthContext) {
 
 export async function listLeads(ctx: AuthContext, q: { page: number; limit?: number; pipelineId?: string; status?: string; source?: string; priority?: string; search?: string }) {
   const filter: Record<string, unknown> = { accountId: accountOf(ctx) };
-  for (const k of ['pipelineId', 'status', 'source', 'priority'] as const) if (q[k]) filter[k] = q[k];
+  const and: Array<Record<string, unknown>> = [];
+  for (const k of ['pipelineId', 'status', 'priority'] as const) if (q[k]) filter[k] = q[k];
+  if (q.source) {
+    // A code or a label; rows saved before the migration match on their label.
+    const code = sourceCodeOf(q.source);
+    and.push(code ? { $or: [{ sourceCode: code }, { sourceCode: null, source: sourceLabel(code) }] } : { source: q.source });
+  }
   if (q.search) {
     const digits = q.search.replace(/\D/g, '');
     const rx = new RegExp(escapeRegex(q.search), 'i');
-    filter.$or = [{ name: rx }, { number: rx }, { email: rx }, ...(digits.length >= 4 ? [{ mobile: new RegExp(escapeRegex(digits)) }] : [])];
+    and.push({ $or: [{ name: rx }, { number: rx }, { email: rx }, ...(digits.length >= 4 ? [{ mobile: new RegExp(escapeRegex(digits)) }] : [])] });
   }
+  if (and.length) filter.$and = and;
   const limit = pageSize(q.limit);
   const [items, total] = await Promise.all([
     Lead.find(filter, { stageHistory: 0, contacts: 0 }).sort({ createdAt: -1, _id: -1 }).skip((q.page - 1) * limit).limit(limit).lean<LeadDoc[]>(),
@@ -188,7 +203,7 @@ export async function duplicateCheck(ctx: AuthContext, q: { mobile: string; name
 // ── P-12 Create ──────────────────────────────────────────────────────────────
 
 interface LeadInput {
-  pipelineId: string; name: string; mobile: string; altMobile?: string | null; email?: string | null; source: string; referrerId?: string | null;
+  pipelineId: string; name: string; mobile: string; altMobile?: string | null; email?: string | null; source: LeadSourceCode; referrerId?: string | null;
   referredByCustomerId?: string | null; campaign?: string | null; interests?: string[]; priority?: string | null; nextFollowUpAt?: Date | null;
   notes?: string | null; confirm: string[];
 }
@@ -198,7 +213,9 @@ export async function createLead(ctx: AuthContext, b: LeadInput, req: Request) {
   const errs: FieldErr[] = [];
   if (!(await pipelineExists(accountId, b.pipelineId))) errs.push({ field: 'pipelineId', messageId: 'VAL-22' });
   if (b.altMobile && b.altMobile === b.mobile) errs.push({ field: 'altMobile', messageId: 'LD-09' });
-  const src = await resolveSource(accountId, b);
+  // Only sources offered on the form (CFG-133); "Paid ads" is kept for old leads but refused for new ones (change #17).
+  if (!offeredSources().includes(b.source)) errs.push({ field: 'source', messageId: 'VAL-22' });
+  const src = await resolveSource(accountId, { ...b, sourceCode: b.source });
   errs.push(...src.errs);
   if (errs.length) throw AppError.fields(errs);
   const key = nameKey(b.name);
@@ -241,21 +258,29 @@ export async function updateLead(ctx: AuthContext, id: string, b: Partial<LeadIn
   await assertNotConverted(l);
   if (l.version !== b.version) throw AppError.versionConflict(RECORD, await detail(l, ctx));
 
+  const currentCode = codeOfLead(l);
   const next = {
     pipelineId: b.pipelineId ?? l.pipelineId, name: b.name ?? l.name, mobile: b.mobile ?? l.mobile,
-    altMobile: b.altMobile !== undefined ? b.altMobile : l.altMobile, source: b.source ?? l.source,
+    altMobile: b.altMobile !== undefined ? b.altMobile : l.altMobile, sourceCode: b.source ?? currentCode,
     referrerId: b.referrerId !== undefined ? b.referrerId : l.referrerUserId,
     referredByCustomerId: b.referredByCustomerId !== undefined ? b.referredByCustomerId : l.referredByCustomerId,
     campaign: b.campaign !== undefined ? b.campaign : l.campaign,
   };
-  const sourceChanged = next.source !== l.source || (next.referrerId ?? null) !== l.referrerUserId
+  const sourceChanged = next.sourceCode !== currentCode || (next.referrerId ?? null) !== l.referrerUserId
     || (next.referredByCustomerId ?? null) !== l.referredByCustomerId || (next.campaign ?? null) !== l.campaign;
   if (sourceChanged && !can(ctx.role, 'leads.correctSource')) throw AppError.forbidden();
 
   const errs: FieldErr[] = [];
   if (next.pipelineId !== l.pipelineId && !(await pipelineExists(l.accountId, next.pipelineId))) errs.push({ field: 'pipelineId', messageId: 'VAL-22' });
   if (next.altMobile && next.altMobile === next.mobile) errs.push({ field: 'altMobile', messageId: 'LD-09' });
-  const src = sourceChanged ? await resolveSource(l.accountId, next) : null;
+  // A corrected source must be one offered now. Keeping the lead's own source (even retired "Paid ads") is allowed;
+  // an old label no code matches must be replaced by a source from the list before referrer or campaign can change.
+  let sourceOk = true;
+  if (sourceChanged && (!next.sourceCode || (next.sourceCode !== currentCode && !offeredSources().includes(next.sourceCode)))) {
+    errs.push({ field: 'source', messageId: 'VAL-22' });
+    sourceOk = false;
+  }
+  const src = sourceChanged && sourceOk ? await resolveSource(l.accountId, { ...next, sourceCode: next.sourceCode! }) : null;
   if (src) errs.push(...src.errs);
   if (b.nextFollowUpAt === null && l.status === 'FOLLOW_UP') errs.push({ field: 'nextFollowUpAt', messageId: 'GEN-01', params: { 'Field label': 'Next follow-up' } });
   if (errs.length) throw AppError.fields(errs);
@@ -274,8 +299,8 @@ export async function updateLead(ctx: AuthContext, id: string, b: Partial<LeadIn
       await audit({ entity: RECORD, entityId: id, entityRef: l.number, action: 'LEAD_UPDATED', before: snapshot(l), after: snapshot(u) }, { req, session });
       if (sourceChanged) {
         await audit({ entity: RECORD, entityId: id, entityRef: l.number, action: 'LEAD_SOURCE_CORRECTED',
-          before: { source: l.source, referrerUserId: l.referrerUserId, referredByCustomerId: l.referredByCustomerId, campaign: l.campaign },
-          after: { source: u.source, referrerUserId: u.referrerUserId, referredByCustomerId: u.referredByCustomerId, campaign: u.campaign } }, { req, session });
+          before: { source: l.source, sourceCode: currentCode, referrerUserId: l.referrerUserId, referredByCustomerId: l.referredByCustomerId, campaign: l.campaign },
+          after: { source: u.source, sourceCode: u.sourceCode, referrerUserId: u.referrerUserId, referredByCustomerId: u.referredByCustomerId, campaign: u.campaign } }, { req, session });
       }
       return u;
     });
@@ -390,7 +415,7 @@ export async function convertLead(ctx: AuthContext, id: string, b: { version: nu
         altMobile: extras.altMobile !== undefined ? extras.altMobile : l.altMobile,
         email: extras.email !== undefined ? extras.email : l.email,
         notes: extras.notes !== undefined ? extras.notes : l.notes,
-        source: l.source, leadId: l._id, referrerUserId: l.referrerUserId, referredByCustomerId: l.referredByCustomerId,
+        source: l.source, sourceCode: codeOfLead(l), leadId: l._id, referrerUserId: l.referrerUserId, referredByCustomerId: l.referredByCustomerId,
       }, session)).toObject();
       await audit({ entity: 'customer', entityId: customer._id, entityRef: customer.number, action: 'CUSTOMER_CREATED', after: { name: customer.name, mobile: customer.mobile, leadId: l._id, source: l.source } }, { req, session });
     } else {

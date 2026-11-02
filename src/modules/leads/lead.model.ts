@@ -33,7 +33,10 @@ const leadSchema = new Schema(
     mobile: { type: String, required: true, match: STORED_MOBILE },
     altMobile: { type: String, default: null },
     email: { type: String, default: null },
+    /** The label shown when the lead was saved (kept for older clients, exports and reports). */
     source: { type: String, required: true },
+    /** Stable code (lib/leadSources.ts); rules key on this. Null only on rows saved before the change-#17 migration. */
+    sourceCode: { type: String, default: null },
     referrerUserId: { type: String, default: null },
     referredByCustomerId: { type: String, default: null },
     campaign: { type: String, default: null },
@@ -62,6 +65,7 @@ leadSchema.index({ accountId: 1, mobile: 1, nameKey: 1 }, { unique: true, partia
 leadSchema.index({ accountId: 1, createdAt: -1 });
 leadSchema.index({ accountId: 1, pipelineId: 1, status: 1 });
 leadSchema.index({ accountId: 1, mobile: 1 });
+leadSchema.index({ accountId: 1, sourceCode: 1, createdAt: -1 });
 
 export type LeadDoc = InferSchemaType<typeof leadSchema> & { _id: string; createdAt: Date; updatedAt: Date };
 export const Lead = model('Lead', leadSchema, 'leads');

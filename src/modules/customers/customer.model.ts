@@ -27,6 +27,8 @@ const customerSchema = new Schema(
     anniversary: { type: String, default: null },
     occupation: { type: String, default: null },
     source: { type: String, default: 'Direct' },
+    /** The converted lead's source code (lib/leadSources.ts); null for customers added directly (source 'Direct'). */
+    sourceCode: { type: String, default: null },
     leadId: { type: String, default: null },
     referrerUserId: { type: String, default: null },
     referredByCustomerId: { type: String, default: null },

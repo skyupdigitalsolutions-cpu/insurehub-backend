@@ -36,6 +36,7 @@ import { campaignRoutes, hookRoutes, publicFormRoutes, websiteCors } from './mod
 import { adminRoutes, billingRoutes, exportRoutes, subscriptionWebhookRoutes, supportGrantRoutes, supportUseRoutes } from './modules/admin/admin.routes.js';
 import { correctionRoutes, ocrJobRoutes, adminProductRoutes, advisorPriceRoutes, referencePriceRoutes, approvalRoutes, catalogueInsurerRoutes, ownProductRoutes, productRoutes, productVersionRoutes, templateRoutes, typeRoutes } from './modules/catalogue/catalogue.routes.js';
 import { devRoutes } from './modules/dev/dev.routes.js';
+import { adminFlagRoutes, flagRoutes } from './modules/flags/flags.routes.js';
 
 /**
  * Request pipeline: request ID → log → security headers → CORS → cookies → body limit → routes.
@@ -92,6 +93,8 @@ export function createApp() {
   api.use('/notifications', notificationRoutes());
   api.use('/dashboard', dashboardRoutes());
   api.use('/search', searchRoutes());
+  api.use('/flags', flagRoutes());
+  api.use('/admin/flags', adminFlagRoutes()); // before the general /admin routes
   api.use('/admin/insurers', catalogueInsurerRoutes());
   api.use('/admin/approvals', approvalRoutes());
   api.use('/admin/types', typeRoutes());

@@ -1,8 +1,9 @@
 import { z } from 'zod';
 import {
-  confirmations, editable, email, enumOf, futureDateTime, lists, mobile, notes, oneOf, optional, personName, recordId, required, shortText, version,
+  confirmations, editable, email, enumOf, fail, futureDateTime, lists, mobile, notes, oneOf, optional, personName, recordId, required, shortText, version,
 } from '../../lib/fields.js';
 import { pageQuery } from '../../lib/pagination.js';
+import { sourceCodeOf } from '../../lib/leadSources.js';
 import { customerExtrasBody } from '../customers/customers.schemas.js';
 import { CONTACT_OUTCOMES, PRIORITIES } from './lead.model.js';
 import { LEAD_STATUSES } from './leadStatus.js';
@@ -14,6 +15,13 @@ export const labels = {
   outcome: 'Outcome', mode: 'Conversion', customerId: 'Customer', version: 'Version',
 };
 
+/**
+ * Lead source: a stable code (META_ADS) or, from older clients, its label ("Meta Ads"); always a CODE after parsing.
+ * Whether the code may be chosen (CFG-133, retired PAID_ADS) is checked in the service, which knows the lead's
+ * current source.
+ */
+const leadSource = () => z.string({ invalid_type_error: 'VAL-22' }).max(60).transform((v, ctx) => sourceCodeOf(v) ?? fail(ctx, 'VAL-22'));
+
 const interests = () => z.array(oneOf(lists.insuranceTypes)).max(20);
 
 /** P-12 fields. Referrer / Referred by client / Campaign are required by source (checked in the service). */
@@ -23,7 +31,7 @@ export const createLeadBody = z.object({
   mobile: required(mobile()),
   altMobile: optional(mobile()),
   email: optional(email()),
-  source: required(oneOf(lists.leadSources)),
+  source: required(leadSource()),
   referrerId: optional(recordId('usr')),
   referredByCustomerId: optional(recordId('cus')),
   campaign: optional(shortText()),
@@ -41,7 +49,7 @@ export const updateLeadBody = z.object({
   mobile: editable(mobile()),
   altMobile: optional(mobile()),
   email: optional(email()),
-  source: editable(oneOf(lists.leadSources)),
+  source: editable(leadSource()),
   referrerId: optional(recordId('usr')),
   referredByCustomerId: optional(recordId('cus')),
   campaign: optional(shortText()),

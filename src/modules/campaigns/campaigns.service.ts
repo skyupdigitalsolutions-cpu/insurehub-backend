@@ -6,12 +6,14 @@ import { clock } from '../../lib/clock.js';
 import { AppError } from '../../lib/errors.js';
 import { msg } from '../../lib/messages.js';
 import { isDuplicateKey, withTx } from '../../lib/mongo.js';
+import { sourceLabel, type LeadSourceCode } from '../../lib/leadSources.js';
 import { normalizeMobile } from '../../lib/phone.js';
 import { hitCounter } from '../../lib/rateCounter.js';
 import { Account } from '../accounts/account.model.js';
 import { nextNumber } from '../accounts/numbers.js';
 import { effectiveStatus } from '../accounts/subscription.js';
 import { audit } from '../audit/audit.service.js';
+import { flagOn, type FlagKey } from '../flags/flags.js';
 import { Consent, Customer } from '../customers/customer.model.js';
 import { Lead } from '../leads/lead.model.js';
 import { notify } from '../notifications/notifications.service.js';
@@ -20,8 +22,12 @@ import { Task } from '../tasks/task.model.js';
 import { User } from '../users/user.model.js';
 import { Connection, LeadForm, Submission, type Channel, type ConnectionDoc, type FormDoc, type SubmissionDoc } from './campaign.model.js';
 
-const SOURCE: Record<Channel, string> = { WEBSITE: 'Website form', GOOGLE: 'Google Ads', META: 'Meta Ads', LINKEDIN: 'LinkedIn Ads' };
+/** Lead source of an imported lead, by channel (stable codes, lib/leadSources.ts). */
+const SOURCE: Record<Channel, LeadSourceCode> = { WEBSITE: 'WEBSITE_FORM', GOOGLE: 'GOOGLE_ADS', META: 'META_ADS', LINKEDIN: 'LINKEDIN_ADS' };
 const LABEL: Record<Channel, string> = { WEBSITE: 'Website form', GOOGLE: 'Google Ads', META: 'Meta Ads', LINKEDIN: 'LinkedIn' };
+/** Rollout switch per channel (change analysis §7.4 step 8). LinkedIn cannot be connected yet, so it has none. */
+const CHANNEL_FLAG: Record<Channel, FlagKey | null> = { WEBSITE: 'campaigns_website', GOOGLE: 'campaigns_google', META: 'campaigns_meta', LINKEDIN: null };
+const channelOn = (channel: Channel, accountId: string) => { const f = CHANNEL_FLAG[channel]; return !f || flagOn(f, accountId); };
 const FIELDS = ['name', 'first_name', 'last_name', 'mobile', 'email', 'city', 'consent', 'ignore'] as const;
 type Answer = { key: string; label: string; value: string };
 
@@ -40,6 +46,7 @@ const view = (c: ConnectionDoc) => ({ id: c._id, channel: c.channel, name: c.nam
 
 /** + Website form / + Google Ads: the key is in the answer once (CMP-02). Meta and LinkedIn connect by sign-in (later). */
 export async function connect(ctx: AuthContext, b: { channel: 'WEBSITE' | 'GOOGLE'; name: string; pipelineId?: string | null }, req: Request) {
+  if (!channelOn(b.channel, ctx.accountId!)) throw new AppError(409, 'INVALID_STATE', 'CMP-08', { channel: LABEL[b.channel] });
   const key = newKey(b.channel);
   const c = await Connection.create({ accountId: ctx.accountId, channel: b.channel, name: b.name, keyHash: hashKey(key), keyLast4: key.slice(-4), pipelineId: b.pipelineId ?? null, createdBy: ctx.userId });
   await audit({ entity: 'campaign', entityId: c._id, action: 'CAMPAIGN_CONNECTED', after: { channel: b.channel, name: b.name } }, { req });
@@ -135,6 +142,8 @@ export async function processSubmission(id: string): Promise<SubmissionDoc> {
     if (!conn || !acc) return done('FAILED', { reason: 'Connection removed' });
     if (s.isTest) return done('SKIPPED', { reason: 'Test lead · not counted' });
     if (form && !form.active) return done('SKIPPED', { reason: 'Form switched off' });
+    // Kept as FAILED (not lost): Retry imports it once the channel is switched on for the account.
+    if (!channelOn(conn.channel as Channel, s.accountId)) return done('FAILED', { reason: `${LABEL[conn.channel as Channel]} is not switched on for this account` });
     if (acc.status !== 'ACTIVE') return done('FAILED', { reason: acc.status === 'SUSPENDED' ? 'Account suspended' : 'Account closed' });
     if (effectiveStatus(acc.subscription, clock.now()) === 'EXPIRED') return done('FAILED', { reason: 'Account is read-only: renew the plan, then Retry' });
     const m = mapAnswers(s.answers as unknown as Answer[], (form?.fieldMap ?? {}) as Record<string, string>);
@@ -152,7 +161,7 @@ export async function processSubmission(id: string): Promise<SubmissionDoc> {
       const number = await nextNumber(s.accountId, 'lead', session);
       const now = clock.now();
       const [lead] = await Lead.create([{ accountId: s.accountId, number, pipelineId, name, nameKey: name.toLowerCase().replace(/\s+/g, ' '), mobile: m.mobile, email: m.email,
-        source: SOURCE[conn.channel as Channel], campaign, adRef: { channel: conn.channel, connectionId: conn._id, formId: s.formId, externalId: s.externalId, submissionId: s._id },
+        source: sourceLabel(SOURCE[conn.channel as Channel]), sourceCode: SOURCE[conn.channel as Channel], campaign, adRef: { channel: conn.channel, connectionId: conn._id, formId: s.formId, externalId: s.externalId, submissionId: s._id },
         notes: m.city ? `City: ${m.city}` : null, status: 'NEW', isOpen: true, createdBy: adv?._id ?? 'SYSTEM', nextFollowUpAt: new Date(now.getTime() + cfgNum('CFG-195') * 60_000),
         stageHistory: [{ from: null, to: 'NEW', by: adv?._id ?? 'SYSTEM', at: now }] }], { session: session ?? undefined });
       if (m.consent) await Consent.create([{ accountId: s.accountId, personKey: `L:${lead!._id}`, channel: 'WHATSAPP', status: 'GIVEN', address: m.mobile, howGiven: conn.channel === 'WEBSITE' ? 'Website form tick' : 'Ad form tick', recordedBy: adv?._id ?? 'SYSTEM', recordedAt: now }], { session: session ?? undefined });

@@ -26,7 +26,7 @@ const RECORD = 'customer';
 export function customerSummary(c: CustomerDoc) {
   return {
     id: c._id, number: c.number, name: c.name, mobile: c.mobile, email: c.email, city: c.address?.city ?? null, status: c.status,
-    age: c.dob ? ageOn(c.dob) : null, source: c.source, createdAt: c.createdAt, version: c.version,
+    age: c.dob ? ageOn(c.dob) : null, source: c.source, sourceCode: c.sourceCode ?? null, createdAt: c.createdAt, version: c.version,
   };
 }
 
@@ -100,7 +100,7 @@ function addressFrom(b: CustomerExtras, current?: CustomerDoc['address']) {
 }
 
 export interface NewCustomer extends CustomerExtras {
-  name: string; mobile: string; source?: string; leadId?: string | null; referrerUserId?: string | null; referredByCustomerId?: string | null;
+  name: string; mobile: string; source?: string; sourceCode?: string | null; leadId?: string | null; referrerUserId?: string | null; referredByCustomerId?: string | null;
 }
 
 /** Saves a customer as ACTIVE with the next CU number. Used by P-15 and by lead conversion (P-14). */
@@ -110,7 +110,7 @@ export async function insertCustomer(ctx: AuthContext, b: NewCustomer, session: 
   return new Customer({
     accountId, number, name: b.name, nameKey: nameKey(b.name), mobile: b.mobile, altMobile: b.altMobile ?? null, email: b.email ?? null,
     dob: b.dob ?? null, gender: b.gender ?? null, preferredContact: b.preferredContact ?? null, address: addressFrom(b), anniversary: b.anniversary ?? null,
-    occupation: b.occupation ?? null, notes: b.notes ?? null, source: b.source ?? 'Direct', leadId: b.leadId ?? null,
+    occupation: b.occupation ?? null, notes: b.notes ?? null, source: b.source ?? 'Direct', sourceCode: b.sourceCode ?? null, leadId: b.leadId ?? null,
     referrerUserId: b.referrerUserId ?? null, referredByCustomerId: b.referredByCustomerId ?? null, createdBy: ctx.userId,
   }).save({ session: session ?? undefined });
 }
@@ -384,4 +384,3 @@ export async function setFamilyStatus(ctx: AuthContext, customerId: string, memb
   });
   return familyView(updated);
 }
-

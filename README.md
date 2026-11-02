@@ -38,11 +38,13 @@ warning); production refuses to start without one. To convert the local Windows 
 ## Tests
 
 ```bash
-npm test     # 219 tests: unit + integration on a real MongoDB replica set (mongodb-memory-server) and in-memory Redis
+npm test     # 338 tests: unit + integration on a real MongoDB replica set (mongodb-memory-server) and in-memory Redis
 TEST_NO_TX=1 npm test   # the same suite as on a standalone MongoDB (no transactions)
 ```
 
-mongodb-memory-server downloads MongoDB on first run; set `MONGOMS_SYSTEM_BINARY` to use an installed `mongod`.
+mongodb-memory-server downloads MongoDB on first run; set `MONGOMS_SYSTEM_BINARY` to use an installed `mongod`
+(for example where fastdl.mongodb.org is blocked: `micromamba create -p ./mongoenv -c conda-forge mongodb`, then
+`MONGOMS_SYSTEM_BINARY=./mongoenv/bin/mongod npm test`).
 
 ## Conventions every client must follow
 
@@ -54,6 +56,8 @@ mongodb-memory-server downloads MongoDB on first run; set `MONGOMS_SYSTEM_BINARY
 | Warnings | 409 `CONFIRMATION_REQUIRED` with `details.warnings` (LD-03, LD-04, CU-03, CU-21, CU-22). Repeat with `confirm: ["LD-03", …]` to "Save anyway" |
 | Step-up OTP (CFG-83) | `POST /auth/step-up/otp`, `POST /auth/step-up/verify` → send `X-Step-Up-Token` with the sensitive request |
 | Messages | Success: `meta.messageId` + `meta.message`. Error: `error.code`, `error.messageId`, `error.message`, `error.fields[] {field, messageId, message}`, `error.requestId` |
+| Lead sources (change #17) | Send `source` as a stable code (`META_ADS`); labels are still accepted. Responses carry `source` (label) and `sourceCode`. Picker: `GET /reference` `leadSourceOptions` |
+| Feature switches | Read `GET /flags` at sign-in; web and mobile show the changed screens from the same values |
 | Read-only (GR-33) | Writes from an EXPIRED subscription → 403 `READ_ONLY` (SUB-03) |
 
 ## Endpoints (all under `/v1`)
@@ -65,6 +69,7 @@ mongodb-memory-server downloads MongoDB on first run; set `MONGOMS_SYSTEM_BINARY
 | Leads (P-12–P-14) | `GET /pipelines`; `GET /leads`, `GET /leads/duplicate-check`, `POST /leads`, `GET/PATCH /leads/:id`, `POST /leads/:id/status`, `/contacts`, `/convert` |
 | Customers (P-15–P-17, P-19) | `GET /customers`, `/customers/duplicate-check`, `POST /customers`, `GET/PATCH /customers/:id`, `POST /:id/deactivate|reactivate`, `PUT /:id/identity`, `POST /:id/identity/reveal`, `GET/POST /:id/family`, `PATCH /:id/family/:memberId`, `POST /:id/family/:memberId/deactivate|activate`, `GET/POST /:id/consents` |
 | Catalogue (P-20–P-25) | SkyUp: `/admin/insurers`, `/admin/types`, `/admin/templates/:id`, `/admin/products`, `/admin/product-versions/:id` (`PUT`, `/submit`, `/approve`, `/reject`, `/use-current-template`), `/admin/approvals`. Advisors and assistants: `GET /products`, `GET /products/:id`; advisor only: `GET/PUT /products/:id/commercials`, `GET /my-products/types`, `GET /my-products/types/:id/template`, `POST /my-products`, `PUT /my-products/:id`, `POST /my-products/:id/status` |
+| Feature switches | `GET /flags` (values for the signed-in account); ADM: `GET /admin/flags`, `GET /admin/flags/:key/accounts`, `PUT /admin/flags/:key`, `PUT /admin/flags/:key/accounts/:accountId` (step-up OTP + reason; `enabled: null` clears an account value) |
 | Other | `GET /reference` (CFG lists for screens), `GET /audit` (P-50 view), `/health/live`, `/health/ready` |
 | Test tools (`DEV_TOOLS=true`, never production) | `GET/DELETE /dev/sms`, `POST /dev/sms/failing`, `GET/POST /dev/clock`, `GET /dev/config`, `PUT/DELETE /dev/config/:id`, `POST /dev/reset-limits` |
 

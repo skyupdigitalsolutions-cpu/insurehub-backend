@@ -107,6 +107,8 @@ export const CAPABILITIES = {
   'staff.manage': ['ADM'],
   /** Audit log: ADV own account; STF metadata only; ADM everything (P-50). */
   'audit.view': ['ADV', 'STF', 'ADM'],
+  /** Feature switches for staged rule changes (change analysis §5.3, §9.1): SkyUp Admin only, OTP on every change. */
+  'flags.manage': ['ADM'],
 } as const satisfies Record<string, readonly Role[]>;
 
 export type Capability = keyof typeof CAPABILITIES;

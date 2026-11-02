@@ -12,6 +12,7 @@ import { normalizeMobile } from '../src/lib/phone.js';
 import { redisCache, setRedisClients } from '../src/lib/redis.js';
 import { devSms } from '../src/modules/auth/sms.js';
 import { User } from '../src/modules/users/user.model.js';
+import { loadFlags } from '../src/modules/flags/flags.js';
 
 /**
  * Tests run against a real single-node MongoDB replica set (transactions on), started by
@@ -43,6 +44,7 @@ export async function resetState() {
   clock.setOffset(0);
   await ConfigValue.create({ _id: 'CFG-10', value: 100000 });
   await loadConfigOverrides();
+  await loadFlags(); // collections were emptied: every feature switch is back to its default
 }
 
 export async function setCfg(id: string, value: unknown) {

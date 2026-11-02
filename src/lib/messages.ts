@@ -103,6 +103,12 @@ export const MESSAGES = {
   'CMP-05': 'Submission processed again.',
   'CMP-06': 'Form settings saved.',
   'CMP-07': 'Thank you, {first name}. We will contact you soon.',
+  // [NOT IN BPD YET: add to Section 21] Change #1 rollout: a channel not switched on for the account.
+  'CMP-08': '{channel} leads are not switched on for this account yet.',
+
+  // ── Feature switches [NOT IN BPD YET: add to Section 21] (Backend Change Analysis §5.3, §9.1) ──
+  'FLG-01': 'Feature switch saved. It applies from now on.',
+  'FLG-02': 'This switch applies to every account and cannot be set for one account.',
   // ── Calls and recordings (Leads, mobile app) ──
   'CALL-01': 'Recording attached to the call with {name}.',
   'CALL-02': 'This file is not a call recording we can play. Upload an MP3, M4A, AMR, AAC, WAV or OGG file.',
