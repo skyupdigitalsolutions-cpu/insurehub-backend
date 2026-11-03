@@ -17,6 +17,8 @@ const revisionSchema = new Schema({
   shares: { type: [new Schema({ channel: String, at: Date, by: String, to: { type: String, default: null }, status: String }, { _id: false })], default: [] },
   reason: { type: String, default: null }, // reject or cancel reason (P-29)
   snapshot: { type: Schema.Types.Mixed, required: true },
+  /** Change #2: the product variant quoted. Kept beside the frozen snapshot, never inside it (GR-22). */
+  variantId: { type: String, default: null },
   pdfFileId: { type: String, default: null },
   pdfSha256: { type: String, default: null },
   generatedAt: { type: Date, required: true },

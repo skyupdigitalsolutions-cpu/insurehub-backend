@@ -1,4 +1,4 @@
-import type { RequestHandler } from 'express';
+import type { Request, RequestHandler } from 'express';
 import type { ClientSession } from 'mongoose';
 import { cfgBool } from '../../config/cfg.js';
 import { AppError } from '../../lib/errors.js';
@@ -20,4 +20,15 @@ export const requireStepUp: RequestHandler = async (req, _res, next) => {
 
 export async function useStepUp(stepUpId: string | undefined, usedFor: string, session: ClientSession | null) {
   if (stepUpId) await useGrant(stepUpId, usedFor, session);
+}
+
+/** Reads the step-up token when one is sent (a bad one is refused); without one the request continues. */
+export const optionalStepUp: RequestHandler = async (req, res, next) => {
+  if (!cfgBool('CFG-83') || !req.get('x-step-up-token')) return next();
+  return requireStepUp(req, res, next);
+};
+/** For actions that publish directly (no admin approval, client decision Q92): the OTP is required at that moment. */
+export function assertStepUp(req: Request) {
+  if (!cfgBool('CFG-83')) return;
+  if (!req.stepUpId) throw new AppError(403, 'STEP_UP_REQUIRED', 'AUTH-26', { 'masked mobile': maskMobile(req.auth!.mobile)! });
 }

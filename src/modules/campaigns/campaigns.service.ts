@@ -25,8 +25,8 @@ import { Connection, LeadForm, Submission, type Channel, type ConnectionDoc, typ
 /** Lead source of an imported lead, by channel (stable codes, lib/leadSources.ts). */
 const SOURCE: Record<Channel, LeadSourceCode> = { WEBSITE: 'WEBSITE_FORM', GOOGLE: 'GOOGLE_ADS', META: 'META_ADS', LINKEDIN: 'LINKEDIN_ADS' };
 const LABEL: Record<Channel, string> = { WEBSITE: 'Website form', GOOGLE: 'Google Ads', META: 'Meta Ads', LINKEDIN: 'LinkedIn' };
-/** Rollout switch per channel (change analysis §7.4 step 8). LinkedIn cannot be connected yet, so it has none. */
-const CHANNEL_FLAG: Record<Channel, FlagKey | null> = { WEBSITE: 'campaigns_website', GOOGLE: 'campaigns_google', META: 'campaigns_meta', LINKEDIN: null };
+/** Rollout switch per channel (change analysis §7.4 step 8); LinkedIn has its own (client request). */
+const CHANNEL_FLAG: Record<Channel, FlagKey | null> = { WEBSITE: 'campaigns_website', GOOGLE: 'campaigns_google', META: 'campaigns_meta', LINKEDIN: 'campaigns_linkedin' };
 const channelOn = (channel: Channel, accountId: string) => { const f = CHANNEL_FLAG[channel]; return !f || flagOn(f, accountId); };
 const FIELDS = ['name', 'first_name', 'last_name', 'mobile', 'email', 'city', 'consent', 'ignore'] as const;
 type Answer = { key: string; label: string; value: string };
@@ -168,7 +168,7 @@ export async function processSubmission(id: string): Promise<SubmissionDoc> {
       await Task.create([{ accountId: s.accountId, kind: 'LEAD_FOLLOW_UP', title: `Call ${name} (new ${LABEL[conn.channel as Channel]} lead)`, dueAt: new Date(now.getTime() + cfgNum('CFG-195') * 60_000), linkedType: 'LEAD', linkedId: lead!._id, createdBy: adv?._id ?? null }], { session: session ?? undefined });
       return lead!._id as string;
     });
-    if (adv) await notify({ userId: adv._id, accountId: s.accountId, kind: 'AD_LEAD', messageId: 'CMP-01', params: { channel: LABEL[conn.channel as Channel], name }, dedupeKey: `CMP-01|${s._id}`, link: { type: 'LEAD', id: leadId } }).catch(() => undefined);
+    if (adv) await notify({ userId: adv._id, accountId: s.accountId, kind: 'AD_LEAD_ARRIVED', messageId: 'CMP-01', params: { channel: LABEL[conn.channel as Channel], name }, dedupeKey: `CMP-01|${s._id}`, link: { type: 'LEAD', id: leadId } }).catch(() => undefined);
     return done('IMPORTED', { leadId, reason: null });
   } catch (e) {
     return done('FAILED', { reason: (e as Error).message.slice(0, 200) });
@@ -180,7 +180,7 @@ export async function retry(ctx: AuthContext, id: string, req: Request) {
   if (!s) throw AppError.notFound();
   if (!['FAILED', 'SKIPPED', 'RECEIVED'].includes(s.status) || s.isTest) throw AppError.invalidState('submission', s.status);
   await Submission.updateOne({ _id: id }, { $set: { status: 'RECEIVED' } });
-  const out = await processSubmission(id);
+  const out = (await retryPlatform(id)) ?? (await processSubmission(id));
   await audit({ entity: 'campaign', entityId: id, action: 'CAMPAIGN_SUBMISSION_RETRIED', after: { status: out.status } }, { req });
   return out;
 }
@@ -252,3 +252,232 @@ export async function submitPublicForm(publicKey: string, body: Record<string, u
   return { params: { 'first name': first } };
 }
 void msg;
+
+// ════════ Meta and LinkedIn (connected by sign-in) ════════
+import { createHmac as hmac, randomUUID, timingSafeEqual } from 'node:crypto';
+import { decryptField, encryptField } from '../../lib/crypto.js';
+import { WebhookEvent } from '../comms/outbox.model.js';
+import { JobRun } from '../renewals/renewal.model.js';
+import { ReconnectNeeded, isConfigured, linkedin, linkedinAnswers, linkedinConfig, meta, metaAnswers, metaConfig } from './platforms.js';
+
+type Social = 'META' | 'LINKEDIN';
+const stateKey = () => `${env.WEBHOOK_SECRET}:oauth-state`;
+
+/** Start sign-in: a signed, single-use, 10-minute state (CMP-08 while switched off; CMP-10 if the app is not set up yet). */
+export async function oauthStart(ctx: AuthContext, channel: Social) {
+  if (!channelOn(channel, ctx.accountId!)) throw new AppError(409, 'INVALID_STATE', 'CMP-08', { channel: LABEL[channel] });
+  if (!isConfigured(channel)) throw new AppError(409, 'INVALID_STATE', 'CMP-10', { channel: LABEL[channel] });
+  const body = Buffer.from(JSON.stringify({ a: ctx.accountId, u: ctx.userId, c: channel, n: randomUUID(), e: clock.now().getTime() + 10 * 60_000 })).toString('base64url');
+  const state = `${body}.${hmac('sha256', stateKey()).update(body).digest('base64url')}`;
+  return { url: channel === 'META' ? meta.authUrl(state) : linkedin.authUrl(state) };
+}
+async function readState(state: string, channel: Social) {
+  const [body, sig] = String(state).split('.');
+  if (!body || !sig) throw AppError.forbidden();
+  const want = hmac('sha256', stateKey()).update(body).digest('base64url');
+  if (sig.length !== want.length || !timingSafeEqual(Buffer.from(sig), Buffer.from(want))) throw AppError.forbidden();
+  const s = JSON.parse(Buffer.from(body, 'base64url').toString()) as { a: string; u: string; c: string; n: string; e: number };
+  if (s.c !== channel || s.e < clock.now().getTime()) throw AppError.forbidden();
+  try { await WebhookEvent.create({ _id: `oauth|${s.n}`, source: 'oauth', at: clock.now() }); } catch (e) { if (isDuplicateKey(e)) throw AppError.forbidden(); throw e; } // single use
+  return s;
+}
+/**
+ * The platform sends the browser back here. One connection per account and channel (reconnecting updates it); the
+ * token is stored encrypted. The person then chooses which Pages / ad accounts to take leads from.
+ */
+export async function oauthCallback(channel: Social, code: string, state: string) {
+  const s = await readState(state, channel);
+  const t = channel === 'META' ? await meta.exchange(code) : await linkedin.exchange(code);
+  const list = channel === 'META' ? (await meta.pages(t.token)).map((p) => ({ id: p.id, name: p.name })) : await linkedin.adAccounts(t.token);
+  const existing = await Connection.findOne({ accountId: s.a, channel }).lean<ConnectionDoc>();
+  const keep = new Map((existing?.sources ?? []).map((x) => [x.id, x]));
+  const sources = list.map((x) => ({ id: x.id, name: x.name, tokenEnc: keep.get(x.id)?.tokenEnc ?? null, subscribed: keep.get(x.id)?.subscribed ?? false }));
+  const set = { status: 'CONNECTED', tokenEnc: encryptField(t.token), tokenExpiresAt: t.expiresIn ? new Date(clock.now().getTime() + t.expiresIn * 1000) : null, sources, lastError: null };
+  const conn = existing
+    ? await Connection.findOneAndUpdate({ _id: existing._id }, { $set: set }, { new: true }).lean<ConnectionDoc>()
+    : (await Connection.create({ accountId: s.a, channel, name: LABEL[channel], createdBy: s.u, ...set })).toObject() as ConnectionDoc;
+  // reconnecting: re-subscribe what was chosen before, with fresh tokens
+  if (existing) await saveSources({ accountId: s.a, userId: s.u } as AuthContext, conn!._id, sources.filter((x) => x.subscribed).map((x) => x.id), null);
+  await audit({ entity: 'campaign', entityId: conn!._id, action: existing ? 'CAMPAIGN_RECONNECTED' : 'CAMPAIGN_CONNECTED', after: { channel, sources: list.length } }, { ctx: { userId: s.u, accountId: s.a, role: 'ADV' } as AuthContext });
+  return conn!;
+}
+export async function sources(ctx: AuthContext, id: string) {
+  const c = await loadConn(ctx, id);
+  return c.sources.map((x) => ({ id: x.id, name: x.name, subscribed: !!x.subscribed }));
+}
+/** Choose Pages / ad accounts: Meta subscribes each Page to leadgen with its own Page token; LinkedIn subscribes owner-level notifications. */
+export async function saveSources(ctx: AuthContext, id: string, ids: string[], req: Request | null) {
+  const c = await Connection.findOne({ _id: id, accountId: ctx.accountId }).lean<ConnectionDoc>();
+  if (!c || !c.tokenEnc) throw AppError.notFound();
+  const token = decryptField(c.tokenEnc);
+  const pageTokens = c.channel === 'META' ? new Map((await withReconnect(c, () => meta.pages(token))).map((p) => [p.id, p.token])) : null;
+  const out = [];
+  for (const s of c.sources) {
+    const want = ids.includes(s.id);
+    let tokenEnc = s.tokenEnc ?? null;
+    if (want) {
+      if (c.channel === 'META') { const pt = pageTokens!.get(s.id); if (!pt) continue; await withReconnect(c, () => meta.subscribe(s.id, pt)); tokenEnc = encryptField(pt); }
+      else if (!s.subscribed) await withReconnect(c, () => linkedin.subscribe(s.id, token));
+    }
+    out.push({ id: s.id, name: s.name, tokenEnc: want ? tokenEnc : null, subscribed: want });
+  }
+  await Connection.updateOne({ _id: id }, { $set: { sources: out } });
+  if (req) await audit({ entity: 'campaign', entityId: id, action: 'CAMPAIGN_SOURCES_SAVED', after: { subscribed: ids.length } }, { req });
+  return out.map((x) => ({ id: x.id, name: x.name, subscribed: x.subscribed }));
+}
+/** A token error stops the connection (RECONNECT_NEEDED) and tells the advisor once a day (CMP-09). */
+async function withReconnect<T>(c: ConnectionDoc, fn: () => Promise<T>): Promise<T> {
+  try { return await fn(); } catch (e) {
+    if (e instanceof ReconnectNeeded) {
+      await Connection.updateOne({ _id: c._id }, { $set: { status: 'RECONNECT_NEEDED', lastError: e.message.slice(0, 200) } });
+      const adv = await User.findOne({ accountId: c.accountId, role: 'ADV' }, { _id: 1 }).lean<{ _id: string }>();
+      if (adv) await notify({ userId: adv._id, accountId: c.accountId, kind: 'CONNECTION_RECONNECT_NEEDED', messageId: 'CMP-09', params: { channel: LABEL[c.channel as Channel], name: c.name }, dedupeKey: `CMP-09|${c._id}|${clock.now().toISOString().slice(0, 10)}` }).catch(() => undefined);
+    }
+    throw e;
+  }
+}
+
+/** Store first (the platform's lead ID, before anything else can fail), then fetch the answers and import. */
+async function receivePlatformLead(conn: ConnectionDoc, b: { externalId: string; formExternalId: string; formName: string; meta?: Record<string, unknown> }) {
+  let form = await LeadForm.findOne({ connectionId: conn._id, externalId: b.formExternalId }).lean<FormDoc>();
+  if (!form) {
+    try { form = (await LeadForm.create({ accountId: conn.accountId, connectionId: conn._id, channel: conn.channel, externalId: b.formExternalId, name: b.formName })).toObject() as FormDoc; }
+    catch (e) { if (!isDuplicateKey(e)) throw e; form = (await LeadForm.findOne({ connectionId: conn._id, externalId: b.formExternalId }).lean<FormDoc>())!; }
+  }
+  try { return { sub: (await Submission.create({ accountId: conn.accountId, connectionId: conn._id, formId: form._id, channel: conn.channel, externalId: b.externalId, answers: [], meta: b.meta ?? {} })).toObject() as SubmissionDoc, duplicate: false }; }
+  catch (e) { if (isDuplicateKey(e)) return { sub: (await Submission.findOne({ connectionId: conn._id, externalId: b.externalId }).lean<SubmissionDoc>())!, duplicate: true }; throw e; }
+}
+/** Fetch the answers for a stored Meta / LinkedIn submission and import it. A failed fetch is FAILED; Retry fetches again. */
+async function completePlatformLead(subId: string) {
+  const s = (await Submission.findById(subId).lean<SubmissionDoc>())!;
+  const conn = await Connection.findById(s.connectionId).lean<ConnectionDoc>();
+  if (!conn) return s;
+  try {
+    let answers: Answer[]; let extra: Record<string, unknown> = {}; let isTest = false;
+    if (conn.channel === 'META') {
+      const pageId = String((s.meta as { pageId?: string }).pageId ?? '');
+      const src = conn.sources.find((x) => x.id === pageId && x.tokenEnc);
+      if (!src) throw new Error('This Facebook Page is no longer chosen in Campaigns');
+      const lead = await withReconnect(conn, () => meta.lead(s.externalId, decryptField(src.tokenEnc!)));
+      answers = metaAnswers(lead);
+      extra = { campaignName: lead.campaign_name ?? null, adSetName: lead.adset_name ?? null, adName: lead.ad_name ?? null, adId: lead.ad_id ?? null, isOrganic: lead.is_organic ?? null };
+    } else {
+      const r = await withReconnect(conn, () => linkedin.response(s.externalId, decryptField(conn.tokenEnc!)));
+      answers = linkedinAnswers(r); isTest = !!r.testLead;
+      extra = { formName: r.form?.name ?? null };
+    }
+    await Submission.updateOne({ _id: subId }, { $set: { answers, isTest, meta: { ...(s.meta as object), ...extra }, status: 'RECEIVED', reason: null } });
+    return processSubmission(subId);
+  } catch (e) {
+    return (await Submission.findOneAndUpdate({ _id: subId }, { $set: { status: 'FAILED', reason: `Could not fetch the lead from ${LABEL[conn.channel as Channel]}: ${(e as Error).message.slice(0, 150)}` }, $inc: { attempts: 1 } }, { new: true }).lean<SubmissionDoc>())!;
+  }
+}
+/** Retry also re-fetches a Meta / LinkedIn lead whose answers never arrived. */
+export async function retryPlatform(id: string) { const s = await Submission.findById(id).lean<SubmissionDoc>(); return s && ['META', 'LINKEDIN'].includes(s.channel) && !s.answers.length ? completePlatformLead(id) : null; }
+
+// ── Receivers ──
+const safeEq = (a: string, b: string) => a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
+const rawOf = (req: Request) => (req as unknown as { rawBody?: Buffer }).rawBody ?? Buffer.from('');
+/** Meta's subscription check (GET). */
+export function metaVerify(q: Record<string, unknown>) {
+  const c = metaConfig();
+  if (q['hub.mode'] !== 'subscribe' || !c.verifyToken || !safeEq(String(q['hub.verify_token'] ?? ''), c.verifyToken)) throw AppError.forbidden();
+  return String(q['hub.challenge'] ?? '');
+}
+/** Meta lead webhook: X-Hub-Signature-256 checked on the raw body, and refused when the App Secret is missing (fail closed). */
+export async function metaHook(req: Request) {
+  const secret = metaConfig().appSecret;
+  const got = String(req.headers['x-hub-signature-256'] ?? '');
+  if (!secret || !safeEq(got, `sha256=${hmac('sha256', secret).update(rawOf(req)).digest('hex')}`)) throw AppError.forbidden();
+  const out: Array<{ status: string; duplicate: boolean }> = [];
+  for (const entry of ((req.body?.entry ?? []) as Array<Record<string, any>>).slice(0, 50)) {
+    for (const ch of ((entry.changes ?? []) as Array<Record<string, any>>)) {
+      if (ch.field !== 'leadgen' || !ch.value?.leadgen_id) continue;
+      const v = ch.value;
+      const conn = await Connection.findOne({ channel: 'META', status: 'CONNECTED', sources: { $elemMatch: { id: String(v.page_id), subscribed: true } } }).lean<ConnectionDoc>();
+      if (!conn) continue; // a Page no account has chosen
+      const { sub, duplicate } = await receivePlatformLead(conn, { externalId: String(v.leadgen_id), formExternalId: String(v.form_id ?? 'meta-form'), formName: `Facebook form ${v.form_id ?? ''}`.trim(), meta: { pageId: String(v.page_id), adId: v.ad_id ?? null } });
+      out.push({ status: duplicate ? sub.status : (await completePlatformLead(sub._id)).status, duplicate });
+    }
+  }
+  return { received: out.length, results: out };
+}
+/** LinkedIn's webhook check (GET): challengeResponse = hex(HMAC-SHA256(clientSecret, challengeCode)). */
+export function linkedinChallenge(code: string) {
+  const secret = linkedinConfig().clientSecret;
+  if (!secret || !code) throw AppError.forbidden();
+  return { challengeCode: code, challengeResponse: hmac('sha256', secret).update(code).digest('hex') };
+}
+/** LinkedIn lead notifications: X-LI-Signature = hex(HMAC-SHA256(clientSecret, "hmacsha256=" + raw body)). DELETED clears the answers. */
+export async function linkedinHook(req: Request) {
+  const secret = linkedinConfig().clientSecret;
+  const got = String(req.headers['x-li-signature'] ?? '');
+  if (!secret || !safeEq(got, hmac('sha256', secret).update(Buffer.concat([Buffer.from('hmacsha256='), rawOf(req)])).digest('hex'))) throw AppError.forbidden();
+  const items = (Array.isArray(req.body) ? req.body : Array.isArray(req.body?.elements) ? req.body.elements : [req.body]) as Array<Record<string, any>>;
+  const out: Array<{ status: string; duplicate?: boolean }> = [];
+  for (const n of items.slice(0, 20)) {
+    if (n?.type !== 'LEAD_ACTION' || !n.leadGenFormResponse) continue;
+    const urn = String(n.leadGenFormResponse);
+    if (n.leadAction === 'DELETED') { // the person withdrew: keep the record of the event, remove what they submitted
+      await Submission.updateMany({ channel: 'LINKEDIN', externalId: urn }, { $set: { answers: [], reason: 'Deleted by the person on LinkedIn' } });
+      out.push({ status: 'DELETED' }); continue;
+    }
+    const owner = String(n.owner?.sponsoredAccount ?? '');
+    const conn = await Connection.findOne({ channel: 'LINKEDIN', status: 'CONNECTED', sources: { $elemMatch: { id: owner, subscribed: true } } }).lean<ConnectionDoc>();
+    if (!conn) continue;
+    const { sub, duplicate } = await receivePlatformLead(conn, { externalId: urn, formExternalId: String(n.leadGenForm ?? 'linkedin-form'), formName: 'LinkedIn lead form', meta: { owner } });
+    out.push({ status: duplicate ? sub.status : (await completePlatformLead(sub._id)).status, duplicate });
+  }
+  return { received: out.length, results: out };
+}
+
+/**
+ * Catch-up every 15 minutes (ported from the previous CRM's auto-sync): anything a webhook missed since the last run
+ * (first run: 24 hours). Already-known leads are skipped by the database rule. Token errors → RECONNECT_NEEDED.
+ */
+export async function catchUp(now = clock.now()) {
+  const out = { connections: 0, found: 0, imported: 0, errors: 0 };
+  for await (const c of Connection.find({ channel: { $in: ['META', 'LINKEDIN'] }, status: 'CONNECTED' }).lean<ConnectionDoc>().cursor()) {
+    out.connections++;
+    const since = c.lastSyncAt ?? new Date(now.getTime() - 86_400_000);
+    try {
+      for (const src of c.sources.filter((x) => x.subscribed)) {
+        if (c.channel === 'META' && src.tokenEnc) {
+          const pt = decryptField(src.tokenEnc);
+          for (const f of await withReconnect(c, () => meta.forms(src.id, pt))) {
+            for (const lead of await withReconnect(c, () => meta.formLeads(f.id, pt, Math.floor(since.getTime() / 1000) - 300))) {
+              out.found++;
+              const r = await ingest(c, { externalId: String(lead.id), formExternalId: f.id, formName: f.name, answers: metaAnswers(lead), meta: { pageId: src.id, campaignName: lead.campaign_name ?? null, adSetName: lead.adset_name ?? null, adName: lead.ad_name ?? null, viaCatchUp: true } });
+              if (!r.duplicate) out.imported++;
+            }
+          }
+        } else if (c.channel === 'LINKEDIN' && c.tokenEnc) {
+          for (const r of await withReconnect(c, () => linkedin.responses(src.id, decryptField(c.tokenEnc!), since.getTime() - 300_000))) {
+            out.found++;
+            const x = await ingest(c, { externalId: String(r.id), formExternalId: String(r.versionedLeadGenFormUrn ?? 'linkedin-form'), formName: r.form?.name ?? 'LinkedIn lead form', answers: linkedinAnswers(r), isTest: !!r.testLead, meta: { owner: src.id, viaCatchUp: true } });
+            if (!x.duplicate) out.imported++;
+          }
+        }
+      }
+      await Connection.updateOne({ _id: c._id }, { $set: { lastSyncAt: now, lastError: null } });
+    } catch (e) {
+      out.errors++;
+      await Connection.updateOne({ _id: c._id }, { $set: { lastError: (e as Error).message.slice(0, 200) } });
+      // Change #23: a sync that fails for another reason than sign-in (that one is CMP-09) tells the advisor once a day
+      if (!(e instanceof ReconnectNeeded)) {
+        const adv = await User.findOne({ accountId: c.accountId, role: 'ADV' }, { _id: 1 }).lean<{ _id: string }>();
+        if (adv) await notify({ userId: adv._id, accountId: c.accountId, kind: 'CAMPAIGN_SYNC_FAILED', messageId: 'CMP-12', params: { channel: LABEL[c.channel as Channel], name: c.name }, dedupeKey: `CMP-12|${c._id}|${now.toISOString().slice(0, 10)}`, link: { type: 'CAMPAIGN', id: c._id } }).catch(() => undefined);
+      }
+    }
+  }
+  // LinkedIn tokens last about 60 days: past expiry → reconnect needed
+  await Connection.updateMany({ channel: 'LINKEDIN', status: 'CONNECTED', tokenExpiresAt: { $lt: now } }, { $set: { status: 'RECONNECT_NEEDED', lastError: 'Sign-in expired' } });
+  return out;
+}
+/** From the minute sweep: once per quarter hour (a JobRun record keeps it to one run). */
+export async function maybeCatchUp(now = clock.now()) {
+  const slot = new Date(Math.floor(now.getTime() / 900_000) * 900_000).toISOString();
+  try { await JobRun.create({ _id: `CAMPAIGN-SYNC|${slot}`, at: now }); } catch (e) { if (isDuplicateKey(e)) return null; throw e; }
+  return catchUp(now);
+}
+export const platformReady = () => ({ META: isConfigured('META'), LINKEDIN: isConfigured('LINKEDIN') });

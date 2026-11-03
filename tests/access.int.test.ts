@@ -27,7 +27,7 @@ describe('P-01 Register as an advisor', () => {
     const acc = await Account.findById(v.body.data.user.accountId).lean();
     expect(acc!.subscription).toMatchObject({ status: 'TRIAL', plan: null });
     expect(acc!.wallet!.balancePaise).toBe(0);
-    expect(acc!.pipelines.map((p) => p.name)).toEqual(['Health', 'Motor', 'Life and Term', 'Travel', 'Other']);
+    expect(acc!.pipelines.map((p) => p.name)).toEqual(['Health', 'Motor', 'Life', 'Term', 'Travel', 'Other']);
     expect(await User.countDocuments({ accountId: acc!._id, role: 'ADV' })).toBe(1);
   });
 

@@ -16,6 +16,8 @@ const typeSchema = new Schema(
     name: { type: String, required: true },
     nameKey: { type: String, required: true },
     status: { type: String, enum: ['ACTIVE', 'INACTIVE'], default: 'ACTIVE' },
+    /** Change #4: null = a SkyUp category for every advisor; an account ID = that advisor's private category. */
+    ownerAccountId: { type: String, default: null },
     version: { type: Number, default: 1 },
   },
   { timestamps: true, versionKey: false },

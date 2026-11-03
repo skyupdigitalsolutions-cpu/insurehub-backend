@@ -26,7 +26,7 @@ describe('reading switches', () => {
     const r = await as(adv.token).get('/flags');
     expect(r.body.data).toEqual({
       skyup_direct_publish: false, quotation_accept_requires_payment: false, payment_skips_auto_accept: false,
-      campaigns_website: true, campaigns_google: true, campaigns_meta: false,
+      campaigns_website: true, campaigns_google: true, campaigns_meta: false, campaigns_linkedin: false,
     });
     expect((await request(app).get('/v1/flags')).status).toBe(401);
   });

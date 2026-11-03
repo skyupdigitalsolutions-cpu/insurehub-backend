@@ -4,7 +4,7 @@ import { allow, writable } from '../../middleware/authorize.js';
 import { idempotent } from '../../middleware/idempotency.js';
 import { validate } from '../../middleware/validate.js';
 import { sendData, sendDone } from '../../lib/response.js';
-import { contactBody, convertBody, createLeadBody, duplicateQuery, labels, leadIdParam, listLeadsQuery, statusBody, updateLeadBody } from './leads.schemas.js';
+import { contactBody, convertBody, createLeadBody, duplicateQuery, labels, leadIdParam, listLeadsQuery, statusBody, updateLeadBody, timelineQuery } from './leads.schemas.js';
 import * as leads from './leads.service.js';
 
 const id = (req: { params: unknown }) => (req.params as { id: string }).id;
@@ -28,6 +28,10 @@ export function leadRoutes() {
     sendDone(res, lead, 'LD-01', { 'lead number': lead.number }, 201);
   });
   r.get('/:id', validate({ params: leadIdParam }), async (req, res) => sendData(res, await leads.getLead(req.auth!, id(req))));
+  r.get('/:id/timeline', validate({ params: leadIdParam, query: timelineQuery }), async (req, res) => {
+    const types = (res.locals.query as { types?: string }).types?.split(',').map((t) => t.trim()).filter(Boolean);
+    sendData(res, await leads.timeline(req.auth!, id(req), types));
+  });
   r.patch('/:id', writable, validate({ params: leadIdParam, body: updateLeadBody }, labels), async (req, res) =>
     sendDone(res, await leads.updateLead(req.auth!, id(req), req.body, req), 'GEN-08', { 'Record type': 'Lead' }));
   r.post('/:id/status', writable, validate({ params: leadIdParam, body: statusBody }, labels), idempotent(), async (req, res) => {

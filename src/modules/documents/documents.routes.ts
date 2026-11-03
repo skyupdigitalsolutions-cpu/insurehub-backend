@@ -18,6 +18,7 @@ const uploadBody = z.object({
   type: z.string().max(60).optional(),
   name: documentLabel().nullish(), // FLD-37, for Other
   fileId: required(recordId('fil')),
+  saveAsType: z.boolean().optional(), // change #25: keep this "Other" name as a type to pick again
 }).strict();
 
 /** AC-P18-3: no role can delete a document, on screen or by API. */
@@ -51,5 +52,17 @@ export function customerDocumentRoutes() {
   r.use(allow('documents.work'));
   r.get('/', validate({ params: z.object({ customerId: z.string().regex(/^cus_[a-f0-9]{28}$/) }) }), async (req, res) =>
     sendData(res, await svc.listForCustomer(req.auth!, String(req.params.customerId))));
+  return r;
+}
+
+/** Change #25: GET and POST /account/document-types (advisors and assistants who work on documents). */
+export function accountDocumentTypeRoutes() {
+  const r = Router();
+  r.use(authenticate, allow('documents.work'));
+  r.get('/', async (req, res) => sendData(res, await (await import('./accountDocTypes.service.js')).list(req.auth!)));
+  r.post('/', writable, validate({ body: z.object({ name: required(documentLabel()) }).strict() }, { name: 'Document name' }), async (req, res) => {
+    const out = await (await import('./accountDocTypes.service.js')).add(req.auth!, req.body.name, req);
+    sendDone(res, out, 'DOC-11', { name: out.name }, out.created ? 201 : 200);
+  });
   return r;
 }

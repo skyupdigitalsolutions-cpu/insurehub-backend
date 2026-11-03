@@ -1,11 +1,13 @@
 /**
- * Module 8 Stage 1 — P-20 Manage insurers with maker-checker. Names cite the BPD acceptance checks.
+ * Module 8 Stage 1 — P-20 Manage insurers. No admin approval (client decision, Q92): publishing is direct with OTP.
  */
+import request from 'supertest';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { as, err, login, newMobile, registerAdvisor, resetState, seedAdmin, startTestEnv, stepUp, stopTestEnv } from './helpers.js';
+import { app, as, err, login, newMobile, registerAdvisor, resetState, seedAdmin, startTestEnv, stepUp, stopTestEnv } from './helpers.js';
 import { User } from '../src/modules/users/user.model.js';
 import { normalizeMobile } from '../src/lib/phone.js';
 import { Insurer } from '../src/modules/insurers/insurer.model.js';
+import { AuditLog } from '../src/modules/audit/audit.model.js';
 
 beforeAll(startTestEnv);
 afterAll(stopTestEnv);
@@ -26,8 +28,8 @@ async function people() {
 }
 
 describe('P-20 insurers', () => {
-  it('save draft (CAT-01), submit (CAT-02); fields: code uppercased, bare domain only (CAT-10), phone, https web address', async () => {
-    const { staff } = await people();
+  it('save draft (CAT-01); publish (CAT-42) needs the OTP; fields: code uppercased, bare domain only (CAT-10), phone, https web address', async () => {
+    const { staff, decide } = await people();
     const S = as(staff.token);
     const d = await S.post('/admin/insurers', body());
     expect(d.status).toBe(201);
@@ -36,9 +38,12 @@ describe('P-20 insurers', () => {
     const bad = await S.post('/admin/insurers', body({ name: 'Beta', shortCode: 'B E', paymentDomains: ['https://beta.in/pay'], website: 'beta.in', careNumber: '12345' }));
     expect(fieldIds(bad)).toMatchObject({ shortCode: 'VAL-33', website: 'VAL-28', careNumber: 'VAL-36' });
     expect(JSON.stringify(bad.body)).toContain('Enter a domain such as insurer.com, without https:// or any path.');
-    const ok = await S.post('/admin/insurers', body({ name: 'Beta Life', shortCode: 'BETA', paymentDomains: ['beta.in'], website: 'https://beta.in', careNumber: '1800 123 4567', submit: true }));
-    expect(ok.body.meta.message).toBe('Beta Life sent for approval.');
-    expect(ok.body.data).toMatchObject({ status: 'PENDING_APPROVAL', careNumber: '18001234567' });
+    const live = body({ name: 'Beta Life', shortCode: 'BETA', paymentDomains: ['beta.in'], website: 'https://beta.in', careNumber: '1800 123 4567', submit: true });
+    expect(err(await S.post('/admin/insurers', live))).toMatchObject({ status: 403, messageId: 'AUTH-26' });
+    expect(await Insurer.countDocuments({ name: 'Beta Life' })).toBe(0); // nothing saved without the OTP
+    const ok = await decide(staff, '/admin/insurers', live);
+    expect(ok.body.meta.message).toBe('Beta Life published.');
+    expect(ok.body.data).toMatchObject({ status: 'ACTIVE', careNumber: '18001234567' });
   });
 
   it('AC-P20-1: a duplicate name (ignoring case) or code is refused (CAT-06, CAT-07)', async () => {
@@ -49,67 +54,50 @@ describe('P-20 insurers', () => {
     expect(fieldIds(await S.post('/admin/insurers', body({ name: 'Other' })))).toEqual({ shortCode: 'CAT-07' });
   });
 
-  it('AC-P20-2: the maker cannot approve their own insurer (CAT-05); a different admin approves with OTP (CAT-03)', async () => {
-    const { a, b, decide } = await people();
-    const d = (await as(a.token).post('/admin/insurers', body({ submit: true }))).body.data;
-    const own = await decide(a, `/admin/insurers/${d.id}/approve`, { version: d.version });
-    expect(err(own)).toMatchObject({ status: 403, messageId: 'CAT-05' });
-    expect(own.body.error.message).toBe('You made this change, so another admin must approve it.');
-    const noOtp = await as(b.token).post(`/admin/insurers/${d.id}/approve`, { version: d.version });
-    expect(err(noOtp)).toMatchObject({ status: 403, messageId: 'AUTH-26' });
-    const ok = await decide(b, `/admin/insurers/${d.id}/approve`, { version: d.version });
-    expect(ok.body.meta.message).toBe('Alpha General Insurance approved.');
-    expect(ok.body.data.status).toBe('ACTIVE');
-  });
-
-  it('staff can make but not approve; two approvers at once: the second gets GEN-04', async () => {
-    const { a, b, staff, decide } = await people();
-    const d = (await as(staff.token).post('/admin/insurers', body({ submit: true }))).body.data;
-    expect(err(await decide(staff, `/admin/insurers/${d.id}/approve`, { version: d.version }))).toMatchObject({ status: 403, messageId: 'GEN-03' });
-    // both approvers have their OTP ready and press Approve at the same moment
-    const [ta, tb] = [await stepUp(a.token, a.mobile), await stepUp(b.token, b.mobile)];
-    const [x, y] = await Promise.all([
-      as(a.token).post(`/admin/insurers/${d.id}/approve`, { version: d.version }, { 'X-Step-Up-Token': ta }),
-      as(b.token).post(`/admin/insurers/${d.id}/approve`, { version: d.version }, { 'X-Step-Up-Token': tb }),
-    ]);
-    expect([x.status, y.status].sort()).toEqual([200, 409]);
-    expect(err(x.status === 409 ? x : y)).toMatchObject({ messageId: 'GEN-04' });
-  });
-
-  it('reject with a reason (CAT-04): back to DRAFT with all values kept; edit and submit again', async () => {
+  it('no admin approval: the person who publishes (staff or admin) makes it live at once; the audit log records them with the OTP', async () => {
     const { a, staff, decide } = await people();
-    const S = as(staff.token);
-    const d = (await S.post('/admin/insurers', body({ website: 'https://alphagen.in', submit: true }))).body.data;
-    const r = await decide(a, `/admin/insurers/${d.id}/reject`, { version: d.version, reason: 'IRDAI number does not match' });
-    expect(r.body.meta.message).toBe('Alpha General Insurance rejected. Reason: IRDAI number does not match');
-    expect(r.body.data).toMatchObject({ status: 'DRAFT', website: 'https://alphagen.in', rejectReason: 'IRDAI number does not match' });
-    const again = await S.patch(`/admin/insurers/${d.id}`, { version: r.body.data.version, irdaiRegNo: 'IRDAI-124', submit: true });
-    expect(again.body.data.status).toBe('PENDING_APPROVAL');
+    const draft = (await as(staff.token).post('/admin/insurers', body())).body.data;
+    expect(err(await as(staff.token).post(`/admin/insurers/${draft.id}/submit`, { version: draft.version }))).toMatchObject({ messageId: 'AUTH-26' });
+    const pub = await decide(staff, `/admin/insurers/${draft.id}/submit`, { version: draft.version });
+    expect(pub.body.data.status).toBe('ACTIVE');
+    const entry = await AuditLog.findOne({ entityId: draft.id, action: 'INSURER_PUBLISHED' }).lean();
+    expect(entry).toMatchObject({ actorRole: 'STF' });
+    const viaAdmin = await decide(a, '/admin/insurers', body({ name: 'Gamma Health', shortCode: 'GAMMA', submit: true }));
+    expect(viaAdmin.body.data.status).toBe('ACTIVE');
   });
 
-  it('AC-P20-3: an edit to an ACTIVE insurer is not visible to advisors until approved; one pending change at a time (CAT-08)', async () => {
-    const { a, b, staff, decide } = await people();
-    const d = (await as(a.token).post('/admin/insurers', body({ submit: true }))).body.data;
-    const live = (await decide(b, `/admin/insurers/${d.id}/approve`, { version: d.version })).body.data;
-    // advisors see it under its live name
+  it('items left waiting from before the change can still be cleared: approve (another admin) or reject (CAT-04) back to DRAFT', async () => {
+    const { a, b, decide } = await people();
+    const raw = async (name: string, code: string) => (await Insurer.create({ ...body({ name, shortCode: code }), nameKey: name.toLowerCase(), status: 'PENDING_APPROVAL', makerId: 'usr_old_maker', submittedAt: new Date() })).toObject();
+    const p1 = await raw('Old Pending One', 'OLD-1');
+    const ok = await decide(b, `/admin/insurers/${p1._id}/approve`, { version: p1.version });
+    expect(ok.body.data.status).toBe('ACTIVE');
+    const p2 = await raw('Old Pending Two', 'OLD-2');
+    const r = await decide(b, `/admin/insurers/${p2._id}/reject`, { version: p2.version, reason: 'IRDAI number does not match' });
+    expect(r.body.meta.message).toBe('Old Pending Two rejected. Reason: IRDAI number does not match');
+    expect(r.body.data).toMatchObject({ status: 'DRAFT', rejectReason: 'IRDAI number does not match' });
+  });
+
+  it('AC-P20-3 (changed): an edit to an ACTIVE insurer applies at once with the OTP (CAT-43), and advisors see it; the ID never changes', async () => {
+    const { a, staff, decide } = await people();
+    const d = (await decide(a, '/admin/insurers', body({ submit: true }))).body.data;
     const adv = await registerAdvisor('Asha Rao');
     const seen = async () => ((await as(adv.token).get('/my-insurers/available')).body.data as Array<{ id: string; name: string }>).find((i) => i.id === d.id)?.name;
     expect(await seen()).toBe('Alpha General Insurance');
-    const ch = await as(staff.token).patch(`/admin/insurers/${d.id}`, { version: live.version, name: 'Alpha General Insurance Company' });
-    expect(ch.body.data).toMatchObject({ status: 'ACTIVE', name: 'Alpha General Insurance', pendingChange: { status: 'PENDING', values: { name: 'Alpha General Insurance Company' } } });
-    expect(await seen()).toBe('Alpha General Insurance'); // not visible yet
-    expect(err(await as(staff.token).patch(`/admin/insurers/${d.id}`, { version: ch.body.data.version, careNumber: '1800 123 4567' }))).toMatchObject({ status: 409, messageId: 'CAT-08' });
-    const queue = (await as(b.token).get('/admin/approvals')).body.data;
-    expect(queue.map((q: { what: string; name: string }) => `${q.what}:${q.name}`)).toEqual(['CHANGE:Alpha General Insurance Company']);
-    await decide(b, `/admin/insurers/${d.id}/approve`, { version: ch.body.data.version });
+    expect(err(await as(staff.token).patch(`/admin/insurers/${d.id}`, { version: d.version, name: 'Alpha General Insurance Company' }))).toMatchObject({ messageId: 'AUTH-26' });
+    expect(await seen()).toBe('Alpha General Insurance'); // nothing changed without the OTP
+    const ch = await request(app).patch(`/v1/admin/insurers/${d.id}`).set('Authorization', `Bearer ${staff.token}`).set('X-Client', 'app').set('X-Step-Up-Token', await stepUp(staff.token, staff.mobile)).send({ version: d.version, name: 'Alpha General Insurance Company' });
+    expect(ch.body.meta.message).toBe('Change to Alpha General Insurance Company applied.');
+    expect(ch.body.data).toMatchObject({ status: 'ACTIVE', name: 'Alpha General Insurance Company' });
     expect(await seen()).toBe('Alpha General Insurance Company');
-    expect((await Insurer.findById(d.id).lean())!._id).toBe(d.id); // the ID never changes
+    expect((await as(a.token).get('/admin/approvals')).body.data).toEqual([]); // nothing waits any more
+    expect((await Insurer.findById(d.id).lean())!._id).toBe(d.id);
   });
 
   it('AC-P20-4: deactivation asks CAT-09 with the impact, then blocks new mappings; history is kept', async () => {
-    const { a, b, decide } = await people();
-    const d = (await as(a.token).post('/admin/insurers', body({ submit: true }))).body.data;
-    const live = (await decide(b, `/admin/insurers/${d.id}/approve`, { version: d.version })).body.data;
+    const { a, decide } = await people();
+    const live = (await decide(a, '/admin/insurers', body({ submit: true }))).body.data;
+    const d = live;
     const adv = await registerAdvisor('Asha Rao');
     const map = await as(adv.token).post('/my-insurers', { insurerId: d.id, agentCode: 'AG-1', declaration: true });
     expect(map.status).toBe(201);

@@ -86,7 +86,11 @@ export const FamilyMember = model('FamilyMember', familySchema, 'family_members'
 
 export const CONSENT_CHANNELS = ['WHATSAPP', 'EMAIL', 'SMS', 'PERSONAL_DATA'] as const;
 export type ConsentChannel = (typeof CONSENT_CHANNELS)[number];
-export const HOW_GIVEN = ['Told me in person or by phone', 'Signed form', 'Replied on WhatsApp', 'Ticked on referral form'] as const;
+/** Change #24 adds "Verbal on a call" and "Reply on WhatsApp or email"; the earlier values stay valid for existing records. */
+export const HOW_GIVEN = ['Told me in person or by phone', 'Signed form', 'Replied on WhatsApp', 'Ticked on referral form', 'Verbal on a call', 'Reply on WhatsApp or email'] as const;
+/** Written only by imports (Campaigns): a consent question in the form, ticked yes. */
+export const IMPORT_HOW_GIVEN = ['Website form tick', 'Ad form tick'] as const;
+export const WITHDRAW_REASONS = ['ASKED_TO_STOP', 'REPLIED_STOP', 'OTHER'] as const;
 
 /**
  * Consent (P-17): one current record per person and channel, with every change kept in history.
@@ -112,6 +116,9 @@ const consentSchema = new Schema(
     status: { type: String, enum: ['NOT_RECORDED', 'GIVEN', 'WITHDRAWN'], required: true },
     address: { type: String, default: null }, // the exact mobile or email it was given for
     howGiven: { type: String, default: null },
+    /** Change #24: why consent was withdrawn, a note, and (personal-data consent) that the effects were understood. */
+    evidenceFileId: { type: String, default: null }, // change #24: proof (e.g. the signed form), optional until the client decides (Q107)
+    withdrawReason: { type: String, enum: [...WITHDRAW_REASONS, null], default: null }, withdrawNote: { type: String, default: null }, acknowledgedEffects: { type: Boolean, default: null },
     termsVersion: { type: String, default: null },
     recordedBy: { type: String, default: null },
     recordedAt: { type: Date, required: true },

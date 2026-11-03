@@ -20,6 +20,7 @@ const policySchema = new Schema(
     insurerId: { type: String, default: null },
     productId: { type: String, default: null },
     productName: { type: String, default: null }, // also for "Not in catalogue" (P-34)
+    variantId: { type: String, default: null }, // change #2: from the quotation, else the product's default variant
     typeId: { type: String, default: null },
     soldByMe: { type: Boolean, default: true },
     insured: { type: Schema.Types.Mixed, default: [] }, // [{ key, name, relationship, dob }]

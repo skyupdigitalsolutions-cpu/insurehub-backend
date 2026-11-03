@@ -16,7 +16,9 @@ const insurerSchema = new Schema(
     nameKey: { type: String, required: true }, // lowercased: name is unique ignoring case
     shortCode: { type: String, required: true },
     category: { type: String, enum: INSURER_CATEGORIES, required: true },
-    irdaiRegNo: { type: String, required: true },
+    /** Change #3: null = the SkyUp IRDAI library; an account ID = that advisor's private insurer (no IRDAI number needed). */
+    ownerAccountId: { type: String, default: null },
+    irdaiRegNo: { type: String, required: function (this: { ownerAccountId?: string | null }) { return !this.ownerAccountId; }, default: null },
     website: { type: String, default: null },
     paymentDomains: { type: [String], default: [] },
     careNumber: { type: String, default: null },

@@ -38,26 +38,28 @@ async function greetingsOn(w: W) {
 async function staff() { const m = newMobile(); await User.create({ accountId: null, role: 'STF', name: 'Meena Staff', mobile: normalizeMobile(m), status: 'ACTIVE', activatedAt: new Date() }); return { mobile: m, ...(await login(m)) }; }
 
 describe('P-39 templates', () => {
-  it('AC-P39-4 the maker cannot approve; COM-03 unknown variables; AC-P39-1 a WhatsApp template is usable only after Meta approves (COM-01)', async () => {
-    const admin = await seedAdmin();
+  it('no admin approval: publishing needs the OTP; COM-03 unknown variables; AC-P39-1 a WhatsApp template is usable only after Meta approves (COM-01); a Meta rejection keeps the reason and can be fixed and resubmitted', async () => {
     const s = await staff();
+    const otp = async () => ({ 'X-Step-Up-Token': await stepUp(s.token, s.mobile) });
     const bad = await as(s.token).post('/admin/comms/templates', { name: 'Birthday 2', channel: 'WHATSAPP', purpose: 'BIRTHDAY', body: 'Hi {name}, {policy number}' });
     expect(bad.body.error.fields[0]).toMatchObject({ messageId: 'COM-03' });
     const t = (await as(s.token).post('/admin/comms/templates', { name: 'Birthday 2', channel: 'WHATSAPP', purpose: 'BIRTHDAY', body: 'Many happy returns, {name}! – {advisor name}' })).body.data;
-    await as(s.token).post(`/admin/comms/templates/${t._id}/submit`, {});
-    const A = as(admin.token);
-    const self = await as(admin.token).post(`/admin/comms/templates/${t._id}/submit`, {}); // admin re-submits: now the maker
-    expect(self.status).toBe(409); // already pending
     await MessageTemplate.updateOne({ status: 'ACTIVE', purpose: 'BIRTHDAY' }, { $set: { status: 'INACTIVE' } }); // make room (COM-05)
-    const ap = await A.post(`/admin/comms/templates/${t._id}/approve`, {}, { 'X-Step-Up-Token': await stepUp(admin.token, admin.mobile) });
-    expect(ap.body.meta.message).toBe('Template sent to Meta for approval. The status will update here when Meta replies.');
-    expect((await MessageTemplate.findById(t._id).lean())!.status).toBe('PENDING_APPROVAL'); // not usable yet
+    expect(err(await as(s.token).post(`/admin/comms/templates/${t._id}/submit`, {}))).toMatchObject({ status: 403, messageId: 'AUTH-26' });
+    const sent = await as(s.token).post(`/admin/comms/templates/${t._id}/submit`, {}, await otp());
+    expect(sent.body.meta.message).toBe('Template sent to Meta for approval. The status will update here when Meta replies.');
+    expect((await MessageTemplate.findById(t._id).lean())!.status).toBe('PENDING_APPROVAL'); // not usable until Meta says yes
+    await webhook({ eventId: 'tpl-r', type: 'TEMPLATE', templateId: t._id, decision: 'REJECTED', reason: 'Promotional wording' });
+    expect(await MessageTemplate.findById(t._id).lean()).toMatchObject({ status: 'REJECTED', metaReason: 'Promotional wording' });
+    const again = await as(s.token).post(`/admin/comms/templates/${t._id}/submit`, {}, await otp()); // fix and resubmit
+    expect(again.status).toBe(200);
     await webhook({ eventId: 'tpl-1', type: 'TEMPLATE', templateId: t._id, decision: 'APPROVED' });
     expect((await MessageTemplate.findById(t._id).lean())!.status).toBe('ACTIVE');
-    // the maker cannot approve their own
-    const t2 = (await A.post('/admin/comms/templates', { name: 'Anniv 2', channel: 'EMAIL', purpose: 'SUBSCRIPTION', body: 'Hello {advisor name}' })).body.data;
-    await A.post(`/admin/comms/templates/${t2._id}/submit`, {});
-    expect(err(await A.post(`/admin/comms/templates/${t2._id}/approve`, {}, { 'X-Step-Up-Token': await stepUp(admin.token, admin.mobile) }))).toMatchObject({ messageId: 'CAT-05' });
+    // an email template is live at once
+    const e = (await as(s.token).post('/admin/comms/templates', { name: 'Plan notice', channel: 'EMAIL', purpose: 'SUBSCRIPTION', body: 'Hello {advisor name}' })).body.data;
+    const live = await as(s.token).post(`/admin/comms/templates/${e._id}/submit`, {}, await otp());
+    expect(live.body.meta.message).toBe('Plan notice published.');
+    expect((await MessageTemplate.findById(e._id).lean())!.status).toBe('ACTIVE');
   });
 
   it('AC-P39-3: deactivating a template skips its queued messages', async () => {

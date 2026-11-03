@@ -44,12 +44,17 @@ async function people() {
   return { a, b, staff, decide };
 }
 
-/** Staff creates a verified product, saves DATA and submits; returns the pending version. */
-async function submitted(staff: { token: string }, cat: { insurerId: string; typeId: string }, data: object = DATA, code = 'FAM-SHIELD') {
+/** Staff creates a verified product and saves DATA as a draft (not published). */
+async function drafted(staff: { token: string }, cat: { insurerId: string; typeId: string }, data: object = DATA, code = 'FAM-SHIELD') {
   const c = (await as(staff.token).post('/admin/products', { insurerId: cat.insurerId, typeId: cat.typeId, code })).body.data;
   const saved = (await as(staff.token).put(`/admin/product-versions/${c.version.id}`, { rev: c.version.rev, data })).body.data;
-  const sub = await as(staff.token).post(`/admin/product-versions/${c.version.id}/submit`, { rev: saved.rev });
-  return { productId: c.productId as string, vid: c.version.id as string, sub };
+  return { productId: c.productId as string, vid: c.version.id as string, rev: saved.rev as number };
+}
+/** …and publishes it with the OTP (no admin approval): returns the response (published, or the publish checks' errors). */
+async function submitted(staff: { token: string; mobile: string }, cat: { insurerId: string; typeId: string }, data: object = DATA, code = 'FAM-SHIELD') {
+  const d = await drafted(staff, cat, data, code);
+  const sub = await as(staff.token).post(`/admin/product-versions/${d.vid}/submit`, { rev: d.rev }, { 'X-Step-Up-Token': await stepUp(staff.token, staff.mobile) });
+  return { productId: d.productId, vid: d.vid, sub };
 }
 
 describe('P-22 / P-25 verified products', () => {
@@ -71,57 +76,53 @@ describe('P-22 / P-25 verified products', () => {
     expect(fieldIds(r)).toEqual({ adultMax: 'CAT-16', childMax: 'CAT-34' });
   });
 
-  it('AC-P25-1/2: the maker cannot approve; approval without the OTP is refused; a different ADM publishes (CAT-03)', async () => {
+  it('no admin approval: publishing needs the OTP (AUTH-26) and is live at once (CAT-42); the OTP verification is stored', async () => {
     const cat = await catalogue();
-    const { a, b, decide } = await people();
-    const { vid, sub } = await submitted(a, cat);
-    expect(sub.body.meta.message).toBe('Family Shield version 1 sent for approval.');
-    expect(err(await decide(a, `/admin/product-versions/${vid}/approve`, { rev: sub.body.data.rev }))).toMatchObject({ status: 403, messageId: 'CAT-05' });
-    expect(err(await as(b.token).post(`/admin/product-versions/${vid}/approve`, { rev: sub.body.data.rev }))).toMatchObject({ status: 403, messageId: 'AUTH-26' });
-    const ok = await decide(b, `/admin/product-versions/${vid}/approve`, { rev: sub.body.data.rev });
-    expect(ok.body.meta.message).toBe('Family Shield version 1 approved.');
+    const { a } = await people();
+    const d = await drafted(a, cat);
+    expect(err(await as(a.token).post(`/admin/product-versions/${d.vid}/submit`, { rev: d.rev }))).toMatchObject({ status: 403, messageId: 'AUTH-26' });
+    expect((await ProductVersion.findById(d.vid).lean())!.status).toBe('DRAFT');
+    const ok = await as(a.token).post(`/admin/product-versions/${d.vid}/submit`, { rev: d.rev }, { 'X-Step-Up-Token': await stepUp(a.token, a.mobile) });
+    expect(ok.body.meta.message).toBe('Family Shield version 1 published.');
     expect(ok.body.data.status).toBe('PUBLISHED');
-    expect((await ProductVersion.findById(vid).lean())!.approvalStepUpId).toBeTruthy(); // the OTP verification is stored
+    expect((await ProductVersion.findById(d.vid).lean())!.approvalStepUpId).toBeTruthy(); // the OTP verification is stored
   });
 
-  it('CAT-29: a version changed after the approver opened it is not approved', async () => {
+  it('CAT-29 still guards a version left waiting from before: changed after it was opened, it is not approved', async () => {
     const cat = await catalogue();
     const { a, staff, decide } = await people();
-    const { vid, sub } = await submitted(staff, cat);
-    await ProductVersion.updateOne({ _id: vid }, { $inc: { rev: 1 } }); // someone touched it after it was opened
-    const r = await decide(a, `/admin/product-versions/${vid}/approve`, { rev: sub.body.data.rev });
+    const d = await drafted(staff, cat);
+    await ProductVersion.updateOne({ _id: d.vid }, { $set: { status: 'PENDING_APPROVAL', makerId: 'usr_old_maker' }, $inc: { rev: 1 } }); // waiting, then touched
+    const r = await decide(a, `/admin/product-versions/${d.vid}/approve`, { rev: d.rev });
     expect(err(r)).toMatchObject({ status: 409, messageId: 'CAT-29' });
   });
 
   it('a draft verified product is never visible to advisors; AC-P22-5: "Not stated in source" shows as "Not stated by insurer"', async () => {
     const cat = await catalogue();
-    const { a, staff, decide } = await people();
+    const { staff } = await people();
     const adv = await registerAdvisor('Asha Rao');
-    const { productId, vid, sub } = await submitted(staff, cat);
+    const d = await drafted(staff, cat);
     expect((await as(adv.token).get('/products')).body.data).toEqual([]);
-    expect(err(await as(adv.token).get(`/products/${productId}`))).toMatchObject({ status: 404 });
-    await decide(a, `/admin/product-versions/${vid}/approve`, { rev: sub.body.data.rev });
-    const p = (await as(adv.token).get(`/products/${productId}`)).body.data;
+    expect(err(await as(adv.token).get(`/products/${d.productId}`))).toMatchObject({ status: 404 });
+    await as(staff.token).post(`/admin/product-versions/${d.vid}/submit`, { rev: d.rev }, { 'X-Step-Up-Token': await stepUp(staff.token, staff.mobile) });
+    const p = (await as(adv.token).get(`/products/${d.productId}`)).body.data;
     expect(p.publishedVersion.data.features).toEqual({ room_rent: { value: 5000, page: 3 }, ped_wait: { value: 'Not stated by insurer', page: null } });
     expect(p.status).toBe('ACTIVE');
   });
 
-  it('AC-P25-3: editing makes a new draft (CAT-27); after approval version 2 is published and version 1 kept as SUPERSEDED', async () => {
+  it('AC-P25-3: editing makes a new draft (CAT-27); once published, version 2 is live and version 1 kept as SUPERSEDED', async () => {
     const cat = await catalogue();
     const { a, staff, decide } = await people();
     const adv = await registerAdvisor('Asha Rao');
-    const { productId, vid, sub } = await submitted(staff, cat);
-    await decide(a, `/admin/product-versions/${vid}/approve`, { rev: sub.body.data.rev });
+    const { productId, vid } = await submitted(staff, cat);
     const edit = await as(staff.token).post(`/admin/products/${productId}/versions`, {});
-    expect(edit.body.meta.message).toBe('Editing creates a new draft version. The published version stays live until the new one is approved.');
+    expect(edit.body.meta.message).toBe('Editing creates a new draft version. The published version stays live until the new one is published.');
     expect(err(await as(staff.token).post(`/admin/products/${productId}/versions`, {}))).toMatchObject({ status: 409, messageId: 'CAT-08' });
     const v2 = edit.body.data;
     expect((await as(adv.token).get(`/products/${productId}`)).body.data.publishedVersion.number).toBe(1); // still v1 while v2 is a draft
     const saved = (await as(staff.token).put(`/admin/product-versions/${v2.id}`, { rev: v2.rev, data: { ...DATA, name: 'Family Shield Plus' } })).body.data;
-    const s2 = (await as(staff.token).post(`/admin/product-versions/${v2.id}/submit`, { rev: saved.rev })).body.data;
-    const queue = (await as(a.token).get('/admin/approvals')).body.data;
-    expect(queue[0]).toMatchObject({ kind: 'PRODUCT', what: 'CHANGE', changes: [{ field: 'name', before: 'Family Shield', after: 'Family Shield Plus' }] });
-    await decide(a, `/admin/product-versions/${v2.id}/approve`, { rev: s2.rev });
+    await as(staff.token).post(`/admin/product-versions/${v2.id}/submit`, { rev: saved.rev }, { 'X-Step-Up-Token': await stepUp(staff.token, staff.mobile) });
+    expect((await as(a.token).get('/admin/approvals')).body.data).toEqual([]); // nothing waits
     const now = (await as(adv.token).get(`/products/${productId}`)).body.data.publishedVersion;
     expect(now).toMatchObject({ number: 2, data: { name: 'Family Shield Plus' } });
     expect(await ProductVersion.findById(vid).lean()).toMatchObject({ status: 'SUPERSEDED', data: { name: 'Family Shield' } });
@@ -131,8 +132,7 @@ describe('P-22 / P-25 verified products', () => {
     const cat = await catalogue();
     const { a, staff, decide } = await people();
     const adv = await registerAdvisor('Asha Rao');
-    const { productId, vid, sub } = await submitted(staff, cat);
-    await decide(a, `/admin/product-versions/${vid}/approve`, { rev: sub.body.data.rev });
+    const { productId } = await submitted(staff, cat);
     const p = (await as(a.token).get(`/admin/products/${productId}`)).body.data;
     const w = await as(a.token).post(`/admin/products/${productId}/withdraw`, { version: p.version, reason: 'Insurer stopped selling it' });
     expect(w.body.meta.message).toBe('Family Shield is withdrawn. Advisors can no longer quote it.');

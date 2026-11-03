@@ -4,7 +4,7 @@ import {
   pastOrToday, personName, pin, recordId, required, shortText, state, version,
 } from '../../lib/fields.js';
 import { pageQuery } from '../../lib/pagination.js';
-import { CONSENT_CHANNELS, DEACTIVATION_REASONS, GENDERS, HOW_GIVEN, PREFERRED_CONTACTS } from './customer.model.js';
+import { CONSENT_CHANNELS, DEACTIVATION_REASONS, GENDERS, HOW_GIVEN, PREFERRED_CONTACTS, WITHDRAW_REASONS } from './customer.model.js';
 
 export const labels = {
   name: 'Full name', mobile: 'Primary mobile', altMobile: 'Alternate mobile', email: 'Email', dob: 'Date of birth', gender: 'Gender',
@@ -48,12 +48,18 @@ export const versionBody = z.object({ version: required(version()) });
 export const consentBody = z.object({
   personType: required(enumOf(['CUSTOMER', 'FAMILY'] as const)),
   personId: required(z.string().regex(/^(cus|fam)_[a-f0-9]{28}$/, 'VAL-22')),
-  channel: required(enumOf(CONSENT_CHANNELS)),
+  channel: enumOf(CONSENT_CHANNELS).optional(),
+  /** Change #24: several channels in one record; one consent row is still written per channel. */
+  channels: z.array(enumOf(CONSENT_CHANNELS)).min(1).max(4).optional(),
   action: required(enumOf(['GIVE', 'WITHDRAW'] as const)),
   howGiven: optional(oneOf(() => [...HOW_GIVEN])),
   declaration: z.boolean().optional(),
   version: z.number().int().positive().optional(),
-});
+  evidenceFileId: z.string().regex(/^fil_[a-f0-9]{28}$/).nullish(),
+  withdrawReason: z.enum(WITHDRAW_REASONS).nullish(),
+  withdrawNote: z.string().trim().max(500).nullish(),
+  acknowledgedEffects: z.boolean().optional(),
+}).refine((b) => !!b.channel !== !!b.channels, { message: 'GEN-01', path: ['channel'] });
 
 export const customerIdParam = z.object({ id: z.string().regex(/^cus_[a-f0-9]{28}$/) });
 export const memberParams = z.object({ id: z.string().regex(/^cus_[a-f0-9]{28}$/), memberId: z.string().regex(/^fam_[a-f0-9]{28}$/) });

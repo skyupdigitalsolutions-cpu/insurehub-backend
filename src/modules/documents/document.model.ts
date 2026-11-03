@@ -16,6 +16,7 @@ const documentSchema = new Schema(
     accountId: { type: String, required: true },
     customerId: { type: String, required: true },
     personKey: { type: String, required: true }, // C:<customer id> or F:<family member id>
+    accountDocumentTypeId: { type: String, default: null }, // change #25: an "Other" name saved for the account
     type: { type: String, required: true }, // CFG-171 name
     name: { type: String, default: null }, // FLD-37, only for type Other
     /** Identifies the versioned series: customer + person + type (+ name for Other, + vehicle/slot for vehicles). */

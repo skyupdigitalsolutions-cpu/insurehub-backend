@@ -90,6 +90,9 @@ export const CAPABILITIES = {
   'audit.export': ['ADM'],
   /** P-57: SkyUp opens client records only under an active grant. */
   'support.use': ['STF', 'ADM'],
+  /** Changes #53, #54: subscriptions across advisors (Admin); wallets overview (Staff may view). */
+  'subscriptions.view': ['ADM'],
+  'wallets.view': ['STF', 'ADM'],
   /** Calls from the mobile app: advisors and assistants sync and see calls; only the advisor plays recordings. */
   'calls.sync': ['ADV', 'AST'],
   'calls.view': ['ADV', 'AST'],

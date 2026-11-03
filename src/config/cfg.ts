@@ -179,7 +179,7 @@ const DEFS = {
   // Change #17: stable CODES offered on the new-lead form, in screen order (labels in lib/leadSources.ts).
   'CFG-133': { label: 'Lead sources offered for a new lead (codes, in order)', value: DEFAULT_OFFERED_SOURCES, change: 'ADM' },
   'CFG-158': { label: 'Assistant users per Premium account', unit: 'count', value: 2, change: 'ADM', range: [0, 50] },
-  'CFG-169': { label: 'Lead pipelines created at sign-up', value: ['Health', 'Motor', 'Life and Term', 'Travel', 'Other'], change: 'ADM' },
+  'CFG-169': { label: 'Lead pipelines created at sign-up', value: ['Health', 'Motor', 'Life', 'Term', 'Travel', 'Other'], change: 'ADM' }, // change #18: Life and Term split
   'CFG-170': { label: 'Stages in every pipeline', value: ['New', 'Contacted', 'Qualified', 'Follow-up', 'Converted', 'Lost'], change: 'Release' },
   'CFG-173': { label: 'Features included in the trial', value: 'Everything except the dedicated WhatsApp number and automated WhatsApp messages', change: 'ADM' },
   'CFG-176': { label: 'A revealed Aadhaar or PAN is masked again after', unit: 'seconds', value: 30, change: 'ADM', range: [5, 300] },

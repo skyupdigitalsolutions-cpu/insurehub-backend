@@ -168,13 +168,12 @@ describe('P-24 price versions', () => {
     const S = as(staff.token);
     const c = (await S.post('/admin/products', { insurerId: cat.insurerId, typeId: cat.typeId, code: 'VER-1' })).body.data;
     const saved = (await S.put(`/admin/product-versions/${c.version.id}`, { rev: c.version.rev, data: { ...DATA, sourceLink: 'https://alpha.in/p', sourceCheckedOn: '01-10-2026' } })).body.data;
-    const blocked = await S.post(`/admin/product-versions/${c.version.id}/submit`, { rev: saved.rev });
+    const otp = async () => ({ 'X-Step-Up-Token': await stepUp(staff.token, sm) });
+    const blocked = await S.post(`/admin/product-versions/${c.version.id}/submit`, { rev: saved.rev }, await otp());
     expect(blocked.body.error.message).toContain('a SkyUp reference price version (P-24)');
     expect((await S.post(`/admin/products/${c.productId}/prices`, { effectiveFrom: day(0).dmy, taxPercent: 18, rows: FULL })).status).toBe(201);
-    const sub = await S.post(`/admin/product-versions/${c.version.id}/submit`, { rev: saved.rev });
-    expect(sub.body.meta.message).toBe('Family Shield version 1 sent for approval.');
-    const admin = await seedAdmin();
-    await as(admin.token).post(`/admin/product-versions/${c.version.id}/approve`, { rev: sub.body.data.rev }, { 'X-Step-Up-Token': await stepUp(admin.token, admin.mobile) });
+    const sub = await S.post(`/admin/product-versions/${c.version.id}/submit`, { rev: saved.rev }, await otp());
+    expect(sub.body.meta.message).toBe('Family Shield version 1 published.'); // no admin approval
     const adv = await registerAdvisor('Asha Rao');
     const ref = (await as(adv.token).get(`/products/${c.productId}/prices/reference`)).body.data;
     expect(ref).toMatchObject({ name: 'v1', rowCount: 4 });

@@ -105,6 +105,20 @@ export const MESSAGES = {
   'CMP-07': 'Thank you, {first name}. We will contact you soon.',
   // [NOT IN BPD YET: add to Section 21] Change #1 rollout: a channel not switched on for the account.
   'CMP-08': '{channel} leads are not switched on for this account yet.',
+  'CMP-09': '{channel} needs you to sign in again: {name}. New leads are paused until you reconnect.',
+  'CMP-10': '{channel} is not set up yet. Ask SkyUp to add the approved app details.',
+  'CMP-11': 'Lead sources saved. New leads from them will arrive here.',
+  'CMP-12': '{channel} could not sync: {name}. We will keep trying every 15 minutes.',
+  // ── Stage D (change analysis #18, #21, #23, #25) ──
+  'DSH-26': 'Follow-up overdue: {name} was due {time}.',
+  'CAT-41': 'New in the catalogue: {product} by {insurer}.',
+  // No admin approval (client decision): a publish or change applies at once
+  'CAT-42': '{Item} published.',
+  'CAT-43': 'Change to {Item} applied.',
+  'DOC-11': 'Saved "{name}" as a document type you can pick again.',
+  'TSK-01': 'Task moved to {time}.',
+  'CU-31': 'Consent recorded for {name}: {channels}.',
+  'CU-32': 'Consent withdrawn for {name}: {channels}.',
 
   // ── Feature switches [NOT IN BPD YET: add to Section 21] (Backend Change Analysis §5.3, §9.1) ──
   'FLG-01': 'Feature switch saved. It applies from now on.',
@@ -196,7 +210,7 @@ export const MESSAGES = {
   'CAT-31': 'Upload the CSV template for this product without changing its column names.',
   'CAT-37': 'New price from {start date} saved. The current price applies until {end date}.',
   'CAT-38': 'The new price must start after {date}, when the current price began.',
-  'CAT-27': 'Editing creates a new draft version. The published version stays live until the new one is approved.',
+  'CAT-27': 'Editing creates a new draft version. The published version stays live until the new one is published.',
   'CAT-29': 'This version has changed since you opened it. Reload to review the latest changes.',
   'CAT-33': 'UIN is required to save a product.',
   'CAT-34': 'The child entry band must start at 0 or more and end at or below the adult maximum age.',
@@ -242,7 +256,8 @@ export const MESSAGES = {
   'QT-38': 'Price override applied. The calculated premium of ₹{amount} is kept on the quotation for reference.',
   'QT-41': 'Covers {n} of {m} selected people. Not covered: {names} (outside its age limits).',
   'CAT-36': 'Your commission for {product} is saved. Only you can see it.',
-  'CAT-39': 'SkyUp accepted your correction to {product}. It will apply once the new version is approved.',
+  'CAT-39': 'SkyUp accepted your correction to {product}. It will apply when the updated version is published.',
+  'CAT-44': 'SkyUp accepted your correction to {product}. It is live now.',
   'CAT-40': 'SkyUp did not accept your correction to {product}: {reason}',
   'OCR-01': 'Reading the brochure. This can take up to {CFG-38} minutes. You can leave this page; we will notify you when it is ready.',
   'OCR-02': 'Brochure read. {n} values found; {m} need checking.',

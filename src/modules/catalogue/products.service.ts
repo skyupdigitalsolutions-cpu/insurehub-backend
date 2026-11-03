@@ -218,7 +218,9 @@ export async function adminSubmit(ctx: AuthContext, vid: string, b: { rev: numbe
   const u = await ProductVersion.findOneAndUpdate({ _id: vid, status: 'DRAFT', rev: b.rev }, { $set: { status: 'PENDING_APPROVAL', submittedAt: clock.now(), makerId: ctx.userId }, $inc: { rev: 1 } }, { new: true }).lean<ProductVersionDoc>();
   if (!u) throw AppError.versionConflict('product version', versionView(v));
   await audit({ entity: 'productVersion', entityId: vid, action: 'PRODUCT_SUBMITTED' }, { req });
-  return { version: versionView(u), params: { Item: await productItem(u) } };
+  // No admin approval (Q92): publish now through the approval step; a failure returns the version to DRAFT.
+  try { return await adminApprove(ctx, vid, { rev: u.rev }, req, { direct: true }); }
+  catch (e) { await ProductVersion.updateOne({ _id: vid, status: 'PENDING_APPROVAL' }, { $set: { status: 'DRAFT', rejectReason: (e as Error).message?.slice(0, 200) ?? null }, $inc: { rev: 1 } }); throw e; }
 }
 
 /**
@@ -226,11 +228,11 @@ export async function adminSubmit(ctx: AuthContext, vid: string, b: { rev: numbe
  * changed after it was opened: CAT-29. One transaction: this version PUBLISHED, the old one SUPERSEDED, the
  * product available; the approver, time and OTP verification ID are stored.
  */
-export async function adminApprove(ctx: AuthContext, vid: string, b: { rev: number }, req: Request) {
+export async function adminApprove(ctx: AuthContext, vid: string, b: { rev: number }, req: Request, opts: { direct?: boolean } = {}) {
   const v = await ProductVersion.findById(vid).lean<ProductVersionDoc>();
   if (!v) throw AppError.notFound();
   if (v.status !== 'PENDING_APPROVAL') throw AppError.invalidState('product version', v.status.replace('_', ' '));
-  if (v.makerId === ctx.userId) throw new AppError(403, 'FORBIDDEN', 'CAT-05');
+  if (v.makerId === ctx.userId && !opts.direct) throw new AppError(403, 'FORBIDDEN', 'CAT-05'); // only items left waiting from before
   if (v.rev !== b.rev) throw new AppError(409, 'VERSION_CONFLICT', 'CAT-29');
   const now = clock.now();
   const out = await withTx(async (session) => {
@@ -248,6 +250,7 @@ export async function adminApprove(ctx: AuthContext, vid: string, b: { rev: numb
     return pub!;
   });
   await useStepUp(req.stepUpId, 'CATALOGUE_APPROVED', null);
+  if (v.number === 1) await announcePublished(v.productId); // change #23: a new verified product, not a new version
   return { version: versionView(out), params: { Item: await productItem(out) } };
 }
 
@@ -397,4 +400,24 @@ export async function saveCommercials(ctx: AuthContext, productId: string, b: { 
   await Commercial.findOneAndUpdate({ accountId: ctx.accountId, productId }, { $set: { commissionPercent: b.commissionPercent, notes: b.notes }, $inc: { version: 1 } }, { upsert: true });
   await audit({ entity: 'product', entityId: productId, action: 'COMMERCIALS_SAVED', after: { commissionSet: b.commissionPercent !== null } }, { req }); // the value itself is private
   return { commercials: await getCommercials(ctx, productId), params: { product: p.publishedVersion?.data.name ?? p.code } };
+}
+
+/**
+ * Change #23 CATALOGUE_PRODUCT_PUBLISHED: a SkyUp-verified product published for the first time is announced to every
+ * active advisor (once per product, by dedupe). Called after any publish path (Stage E's direct publish too).
+ */
+export async function announcePublished(productId: string) {
+  const p = await Product.findById(productId, { kind: 1, name: 1, insurerId: 1 }).lean<{ kind: string; name: string | null; insurerId: string }>();
+  if (!p || p.kind !== 'VERIFIED') return 0;
+  const { Insurer } = await import('../insurers/insurer.model.js');
+  const { Account } = await import('../accounts/account.model.js');
+  const { User } = await import('../users/user.model.js');
+  const { notify } = await import('../notifications/notifications.service.js');
+  const insurer = (await Insurer.findById(p.insurerId, { name: 1 }).lean<{ name: string }>())?.name ?? 'an insurer';
+  const active = (await Account.find({ status: 'ACTIVE' }, { _id: 1 }).lean<Array<{ _id: string }>>()).map((a) => a._id);
+  let sent = 0;
+  for await (const u of User.find({ role: 'ADV', status: 'ACTIVE', accountId: { $in: active } }, { _id: 1, accountId: 1 }).lean<{ _id: string; accountId: string }>().cursor()) {
+    if (await notify({ userId: u._id, accountId: u.accountId, kind: 'CATALOGUE_PRODUCT_PUBLISHED', messageId: 'CAT-41', params: { product: p.name ?? 'A new product', insurer }, dedupeKey: `CAT-41|${productId}`, link: { type: 'PRODUCT', id: productId } }).catch(() => false)) sent++;
+  }
+  return sent;
 }

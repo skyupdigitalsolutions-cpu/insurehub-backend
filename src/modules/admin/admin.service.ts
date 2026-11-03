@@ -225,15 +225,17 @@ export async function requestConfigChange(ctx: AuthContext, id: string, value: u
   try {
     const c = await ConfigChange.create({ cfgId: id, oldValue: cfg(id as CfgId), newValue: value, reason, requestedBy: ctx.userId });
     await audit({ entity: 'config', entityId: id, action: 'CONFIG_CHANGE_REQUESTED', before: { value: cfg(id as CfgId) }, after: { value, reason } }, { req });
-    return c.toObject();
+    // No admin approval (Q92): applied now, with the reason and the OTP; the history keeps old value, new value, who and why.
+    await decideConfigChange(ctx, c._id as string, true, req, { direct: true });
+    return (await ConfigChange.findById(c._id).lean())!;
   } catch (e) { if (isDuplicateKey(e)) throw new AppError(409, 'INVALID_STATE', 'CAT-08'); throw e; }
 }
 /** A different ADM approves with OTP; refused if the setting changed meanwhile (CAT-29). Applies at once (AC-P49-1). */
-export async function decideConfigChange(ctx: AuthContext, changeId: string, approve: boolean, req: Request) {
+export async function decideConfigChange(ctx: AuthContext, changeId: string, approve: boolean, req: Request, opts: { direct?: boolean } = {}) {
   const c = await ConfigChange.findById(changeId).lean<{ _id: string; cfgId: CfgId; oldValue: unknown; newValue: unknown; status: string; requestedBy: string }>();
   if (!c) throw AppError.notFound();
   if (c.status !== 'PENDING_APPROVAL') throw AppError.invalidState('change', c.status);
-  if (approve && c.requestedBy === ctx.userId) throw new AppError(403, 'FORBIDDEN', 'CAT-05');
+  if (approve && c.requestedBy === ctx.userId && !opts.direct) throw new AppError(403, 'FORBIDDEN', 'CAT-05'); // only changes left waiting from before
   if (approve && JSON.stringify(cfg(c.cfgId)) !== JSON.stringify(c.oldValue)) throw new AppError(409, 'VERSION_CONFLICT', 'CAT-29');
   await ConfigChange.updateOne({ _id: changeId, status: 'PENDING_APPROVAL' }, { $set: { status: approve ? 'APPLIED' : 'REJECTED', approvedBy: ctx.userId, decidedAt: clock.now() } });
   if (approve) { await ConfigValue.updateOne({ _id: c.cfgId }, { $set: { value: c.newValue, updatedBy: ctx.userId } }, { upsert: true }); await loadConfigOverrides(); }
@@ -377,3 +379,58 @@ export async function supportCustomer(ctx: AuthContext, accountId: string, id: s
 /** Dev tools: the gateway confirming a subscription payment (signed). */
 export function devSign(body: object) { return sign(JSON.stringify(body)); }
 void cfgList;
+// ════════ Changes #53, #54: subscriptions and wallets across all advisors (read only) ════════
+import { WalletTxn } from '../comms/outbox.model.js';
+
+/** Every advisor account with its plan, status (as in force now), period end and last invoice; filter by status. */
+export async function subscriptions(q: { status?: string }) {
+  const accs = await Account.find({}, { subscription: 1, status: 1, createdAt: 1 }).sort({ createdAt: -1 }).limit(2000).lean<Array<{ _id: string; status: string; subscription: Parameters<typeof effectiveStatus>[0] & { plan: string | null; cycle?: string | null; endsAt: Date } }>>();
+  const advisors = new Map((await User.find({ role: 'ADV', accountId: { $in: accs.map((a) => a._id) } }, { name: 1, accountId: 1 }).lean<Array<{ name: string; accountId: string }>>()).map((u) => [u.accountId, u.name]));
+  const last = new Map((await SubscriptionOrder.aggregate<{ _id: string; id: string; invoiceNumber: string; totalPaise: number; at: Date }>([
+    { $match: { status: 'SUCCESS' } }, { $sort: { createdAt: -1 } },
+    { $group: { _id: '$accountId', id: { $first: '$_id' }, invoiceNumber: { $first: '$invoiceNumber' }, totalPaise: { $first: '$totalPaise' }, at: { $first: '$createdAt' } } },
+  ])).map((r) => [r._id, r]));
+  const rows = accs.map((a) => {
+    const inv = last.get(a._id);
+    return { accountId: a._id, advisor: advisors.get(a._id) ?? '', accountStatus: a.status, plan: a.subscription.plan, status: effectiveStatus(a.subscription, clock.now()), cycle: a.subscription.cycle ?? null,
+      endsAt: a.subscription.endsAt, lastInvoice: inv ? { id: inv.id, number: inv.invoiceNumber, total: inv.totalPaise / 100, at: inv.at } : null };
+  });
+  return q.status && q.status !== 'ALL' ? rows.filter((r) => r.status === q.status) : rows;
+}
+/** One invoice: plan, period, amounts with the GST split, how it was paid and by whom recorded, GSTIN and state. */
+export async function invoice(id: string) {
+  const o = await SubscriptionOrder.findOne({ _id: id, status: 'SUCCESS' }).lean<OrderDoc>();
+  if (!o) throw AppError.notFound();
+  const [adv, by] = await Promise.all([User.findOne({ accountId: o.accountId, role: 'ADV' }, { name: 1 }).lean<{ name: string }>(), User.findById(o.createdBy, { name: 1, role: 1 }).lean<{ name: string; role: string }>()]);
+  return {
+    id: o._id, invoiceNumber: o.invoiceNumber, accountId: o.accountId, advisor: adv?.name ?? '', plan: o.plan, cycle: o.cycle, period: { from: o.periodStart, to: o.periodEnd },
+    amounts: { base: o.basePaise / 100, credit: o.creditPaise / 100, cgst: (o.gst.cgst ?? 0) / 100, sgst: (o.gst.sgst ?? 0) / 100, igst: (o.gst.igst ?? 0) / 100, total: o.totalPaise / 100 },
+    method: o.kind === 'OFFLINE' ? 'Offline' : 'Online', reference: o.reference ?? o.gatewayPaymentId ?? null,
+    recordedBy: o.kind === 'OFFLINE' ? (by?.name ?? null) : null, gstin: o.gstin ?? null, state: o.state ?? null, at: o.createdAt,
+  };
+}
+/** All wallets: totals (balance, recharged this month, messages this month, low and empty) and one row per account. */
+export async function wallets(q: { filter?: 'ALL' | 'LOW' | 'EMPTY' }) {
+  const monthStart = new Date(`${istToday().slice(0, 7)}-01T00:00:00+05:30`);
+  const accs = await Account.find({}, { wallet: 1, subscription: 1 }).lean<Array<{ _id: string; wallet: { balancePaise: number }; subscription: { plan: string | null } }>>();
+  const [recharges, debits, lastRecharge] = await Promise.all([
+    WalletTxn.aggregate<{ _id: string; paise: number }>([{ $match: { type: { $in: ['RECHARGE', 'CREDIT'] }, status: 'SUCCESS', createdAt: { $gte: monthStart } } }, { $group: { _id: '$accountId', paise: { $sum: '$amountPaise' } } }]),
+    WalletTxn.aggregate<{ _id: string; n: number }>([{ $match: { type: 'DEBIT', createdAt: { $gte: monthStart } } }, { $group: { _id: '$accountId', n: { $sum: 1 } } }]),
+    WalletTxn.aggregate<{ _id: string; at: Date; paise: number }>([{ $match: { type: 'RECHARGE', status: 'SUCCESS' } }, { $sort: { createdAt: -1 } }, { $group: { _id: '$accountId', at: { $first: '$createdAt' }, paise: { $first: '$amountPaise' } } }]),
+  ]);
+  const rmap = new Map(recharges.map((r) => [r._id, r.paise])); const dmap = new Map(debits.map((d) => [d._id, d.n])); const lmap = new Map(lastRecharge.map((l) => [l._id, l]));
+  const advisors = new Map((await User.find({ role: 'ADV' }, { name: 1, accountId: 1 }).lean<Array<{ name: string; accountId: string }>>()).map((u) => [u.accountId, u.name]));
+  const price = cfgNum('CFG-162'); const lowBelow = cfgNum('CFG-164') * 100;
+  const rows = accs.map((a) => {
+    const bal = a.wallet?.balancePaise ?? 0;
+    const status = bal < price ? 'EMPTY' : bal < lowBelow ? 'LOW' : 'OK';
+    const lr = lmap.get(a._id);
+    return { accountId: a._id, advisor: advisors.get(a._id) ?? '', plan: a.subscription?.plan ?? null, balance: bal / 100, lastRecharge: lr ? { at: lr.at, amount: lr.paise / 100 } : null, messagesThisMonth: dmap.get(a._id) ?? 0, status, statusLabel: status === 'EMPTY' ? 'Empty · sending paused' : status === 'LOW' ? 'Low' : 'OK' };
+  });
+  const totals = {
+    balance: rows.reduce((s, r) => s + r.balance, 0), rechargedThisMonth: [...rmap.values()].reduce((s, p) => s + p, 0) / 100,
+    messagesThisMonth: rows.reduce((s, r) => s + r.messagesThisMonth, 0), lowCount: rows.filter((r) => r.status === 'LOW').length, emptyCount: rows.filter((r) => r.status === 'EMPTY').length,
+  };
+  const filter = q.filter ?? 'ALL';
+  return { totals, rows: filter === 'ALL' ? rows : rows.filter((r) => r.status === filter) };
+}

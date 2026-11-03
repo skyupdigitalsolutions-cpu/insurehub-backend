@@ -18,7 +18,7 @@ import { profileRoutes } from './modules/profile/profile.routes.js';
 import { fileRoutes } from './modules/files/files.routes.js';
 import { kycReviewRoutes, kycRoutes } from './modules/kyc/kyc.routes.js';
 import { agentCodeFlagRoutes, insurerCatalogueRoutes, myInsurersRoutes } from './modules/insurers/myInsurers.routes.js';
-import { customerDocumentRoutes, documentRoutes } from './modules/documents/documents.routes.js';
+import { customerDocumentRoutes, documentRoutes, accountDocumentTypeRoutes } from './modules/documents/documents.routes.js';
 import { customerVehicleRoutes, vehicleRoutes } from './modules/vehicles/vehicles.routes.js';
 import { taskRoutes } from './modules/tasks/tasks.routes.js';
 import { notificationRoutes } from './modules/notifications/notifications.routes.js';
@@ -32,6 +32,10 @@ import { renewalRoutes } from './modules/renewals/renewals.routes.js';
 import { adminCommsRoutes, commsRoutes, greetingRoutes, walletRoutes, webhookRoutes } from './modules/comms/comms.routes.js';
 import { publicReferralRoutes, referralSelfRoutes, referrerRoutes } from './modules/referrals/referrals.routes.js';
 import { callRoutes } from './modules/calls/calls.routes.js';
+// Models used from Stage B on (variants, saved document types): registered here so `db:indexes` builds their rules.
+import './modules/catalogue/variant.model.js';
+import { featureTableRoutes } from './modules/catalogue/featureTable.routes.js';
+import './modules/documents/accountDocType.model.js';
 import { campaignRoutes, hookRoutes, publicFormRoutes, websiteCors } from './modules/campaigns/campaigns.routes.js';
 import { adminRoutes, billingRoutes, exportRoutes, subscriptionWebhookRoutes, supportGrantRoutes, supportUseRoutes } from './modules/admin/admin.routes.js';
 import { correctionRoutes, ocrJobRoutes, adminProductRoutes, advisorPriceRoutes, referencePriceRoutes, approvalRoutes, catalogueInsurerRoutes, ownProductRoutes, productRoutes, productVersionRoutes, templateRoutes, typeRoutes } from './modules/catalogue/catalogue.routes.js';
@@ -105,6 +109,8 @@ export function createApp() {
   api.use('/products', advisorPriceRoutes()); // /products/:id/prices…
   api.use('/products', productRoutes());
   api.use('/my-products', ownProductRoutes());
+  api.use('/catalogue', featureTableRoutes());
+  api.use('/account/document-types', accountDocumentTypeRoutes());
   api.use('/quotations', quotationPaymentRoutes()); // /quotations/:id/payment-link, /payments (before the quotation routes)
   api.use('/quotations', quotationRoutes());
   api.use('/payments', paymentRoutes());

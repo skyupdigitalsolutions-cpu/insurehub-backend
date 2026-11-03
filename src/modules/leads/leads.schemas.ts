@@ -83,9 +83,18 @@ export const leadIdParam = z.object({ id: z.string().regex(/^led_[a-f0-9]{28}$/)
 export const listLeadsQuery = z.object({
   ...pageQuery,
   pipelineId: recordId('pip').optional(),
-  status: enumOf(LEAD_STATUSES).optional(),
-  source: z.string().max(60).optional(),
+  /** Change #19: one status or several, comma-separated (NEW,CONTACTED). */
+  status: z.string().max(200).refine((v) => v.split(',').every((s) => (LEAD_STATUSES as readonly string[]).includes(s.trim())), { message: 'VAL-22' }).optional(),
+  /** One source or several, comma-separated (codes or labels). */
+  source: z.string().max(400).optional(),
+  /** Follow-up due today (IST) or already overdue. */
+  followUp: z.enum(['today', 'overdue']).optional(),
+  /** Leads imported from one campaign connection (cnx_…) or one form (lfm_…). */
+  campaignId: z.string().regex(/^(cnx|lfm)_[a-f0-9]{28}$/).optional(),
   priority: enumOf(PRIORITIES).optional(),
   search: z.string().trim().max(100).optional(),
 });
+/** Change #20: the lead timeline, optionally filtered by item type. */
+export const TIMELINE_TYPES = ['CONTACT', 'STATUS', 'FOLLOW_UP', 'TASK', 'MESSAGE', 'QUOTATION', 'CALL'] as const;
+export const timelineQuery = z.object({ types: z.string().max(200).refine((v) => v.split(',').every((t) => (TIMELINE_TYPES as readonly string[]).includes(t.trim())), { message: 'VAL-22' }).optional() });
 export const duplicateQuery = z.object({ mobile: required(mobile()), name: optional(personName()), excludeId: optional(recordId('led')) });

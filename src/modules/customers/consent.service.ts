@@ -82,6 +82,8 @@ export async function getConsents(ctx: AuthContext, customerId: string) {
 interface ConsentInput {
   personType: 'CUSTOMER' | 'FAMILY'; personId: string; channel: ConsentChannel; action: 'GIVE' | 'WITHDRAW';
   howGiven?: string | null; declaration?: boolean; version?: number;
+  /** Change #24: optional proof; why consent was withdrawn (a note when "Other"); personal-data withdrawal acknowledgement. */
+  evidenceFileId?: string | null; withdrawReason?: 'ASKED_TO_STOP' | 'REPLIED_STOP' | 'OTHER' | null; withdrawNote?: string | null; acknowledgedEffects?: boolean;
 }
 
 /** P-17 steps 2–3: record (with how it was given and the declaration) or withdraw, per person and channel. */
@@ -125,22 +127,26 @@ export async function recordConsent(ctx: AuthContext, customerId: string, b: Con
     if (existing?.status !== 'GIVEN') {
       throw AppError.invalidState('consent', existing?.status === 'WITHDRAWN' ? 'withdrawn' : 'not recorded');
     }
+    if (b.withdrawReason === 'OTHER' && !b.withdrawNote) throw AppError.field('withdrawNote', 'GEN-01', { 'Field label': 'Note' });
     next = { status: 'WITHDRAWN', address: existing.address ?? null, howGiven: existing.howGiven ?? null };
   }
+  const extra = next.status === 'GIVEN'
+    ? { evidenceFileId: b.evidenceFileId ?? null, withdrawReason: null, withdrawNote: null, acknowledgedEffects: null }
+    : { withdrawReason: b.withdrawReason ?? null, withdrawNote: b.withdrawNote ?? null, acknowledgedEffects: b.channel === 'PERSONAL_DATA' ? (b.acknowledgedEffects ?? null) : null };
 
-  const change = { from: existing?.status ?? 'NOT_RECORDED', to: next.status, address: next.address, howGiven: next.howGiven, note: null, source: 'USER', by: ctx.userId, at: now };
+  const change = { from: existing?.status ?? 'NOT_RECORDED', to: next.status, address: next.address, howGiven: next.howGiven, note: next.status === 'WITHDRAWN' ? ([b.withdrawReason, b.withdrawNote].filter(Boolean).join(': ') || null) : null, source: 'USER', by: ctx.userId, at: now };
   const termsVersion = b.channel === 'PERSONAL_DATA' ? env.TERMS_VERSION : null;
   try {
     await withTx(async (session) => {
       if (existing) {
         const r = await Consent.updateOne(
           { _id: existing._id, version: existing.version },
-          { $set: { status: next.status, address: next.address, howGiven: next.howGiven, termsVersion: termsVersion ?? existing.termsVersion, recordedBy: ctx.userId, recordedAt: now }, $inc: { version: 1 }, $push: { history: change } },
+          { $set: { ...extra, status: next.status, address: next.address, howGiven: next.howGiven, termsVersion: termsVersion ?? existing.termsVersion, recordedBy: ctx.userId, recordedAt: now }, $inc: { version: 1 }, $push: { history: change } },
           { session: session ?? undefined },
         );
         if (r.modifiedCount === 0) throw AppError.versionConflict('consent', null);
       } else {
-        await new Consent({ accountId, personKey: person.key, customerId, channel: b.channel, ...next, termsVersion, recordedBy: ctx.userId, recordedAt: now, history: [change] }).save({ session: session ?? undefined });
+        await new Consent({ accountId, personKey: person.key, customerId, channel: b.channel, ...next, ...extra, termsVersion, recordedBy: ctx.userId, recordedAt: now, history: [change] }).save({ session: session ?? undefined });
       }
       await audit({
         entity: 'consent', entityId: customerId, entityRef: customer.number, action: next.status === 'GIVEN' ? 'CONSENT_GIVEN' : 'CONSENT_WITHDRAWN',
@@ -154,4 +160,37 @@ export async function recordConsent(ctx: AuthContext, customerId: string, b: Con
   if (next.status === 'GIVEN') return { messageId: 'CU-11', params: { Channel: label, name: person.name } };
   if (b.channel === 'PERSONAL_DATA') return { messageId: 'CU-30', params: { Customer: customer.name } };
   return { messageId: 'CU-12', params: { Channel: label, name: person.name, channel: label } };
+}
+
+/**
+ * Change #24: several channels in one record. Everything that could refuse any one channel is checked first (person,
+ * contact details, declaration, current state), so a refusal writes nothing; then one row per channel is saved
+ * through recordConsent, exactly as a single-channel request would.
+ */
+export async function recordConsents(ctx: AuthContext, customerId: string, b: Omit<ConsentInput, 'channel'> & { channels: ConsentChannel[] }, req: Request) {
+  const accountId = accountOf(ctx);
+  const customer = await Customer.findOne({ _id: customerId, accountId }).lean();
+  if (!customer) throw AppError.notFound();
+  const channels = [...new Set(b.channels)];
+  const fam = b.personType === 'FAMILY' ? await FamilyMember.findOne({ _id: b.personId, accountId, customerId, status: 'ACTIVE' }).lean() : null;
+  if (b.personType === 'CUSTOMER' ? b.personId !== customer._id : !fam) throw AppError.field('personId', 'VAL-22');
+  if (b.personType === 'FAMILY' && channels.includes('PERSONAL_DATA')) throw AppError.field('personType', 'VAL-22');
+  const person = b.personType === 'CUSTOMER' ? { name: customer.name, mobile: customer.mobile, email: customer.email ?? null, key: personKey('C', customer._id) } : { name: fam!.name, mobile: fam!.mobile ?? null, email: fam!.email ?? null, key: personKey('F', fam!._id) };
+  if (b.action === 'GIVE') {
+    if (customer.status !== 'ACTIVE') throw new AppError(409, 'INVALID_STATE', 'CU-20', { Customer: customer.name });
+    const errs: Array<{ field: string; messageId: MessageId; params?: MessageParams }> = [];
+    if (!b.howGiven) errs.push({ field: 'howGiven', messageId: 'GEN-01', params: { 'Field label': 'How it was given' } });
+    if (b.declaration !== true) errs.push({ field: 'declaration', messageId: 'VAL-29' });
+    if (errs.length) throw AppError.fields(errs);
+    for (const ch of channels) {
+      if ((ch === 'WHATSAPP' || ch === 'SMS') && !person.mobile) throw new AppError(409, 'INVALID_STATE', 'CU-13', { name: person.name, channel: CHANNEL_LABEL[ch] });
+      if (ch === 'EMAIL' && !person.email) throw new AppError(409, 'INVALID_STATE', 'CU-14', { name: person.name });
+    }
+  } else {
+    if (b.withdrawReason === 'OTHER' && !b.withdrawNote) throw AppError.field('withdrawNote', 'GEN-01', { 'Field label': 'Note' });
+    const rows = await Consent.find({ accountId, personKey: person.key, channel: { $in: channels } }, { channel: 1, status: 1 }).lean<Array<{ channel: string; status: string }>>();
+    for (const ch of channels) if (rows.find((r) => r.channel === ch)?.status !== 'GIVEN') throw AppError.invalidState('consent', `${CHANNEL_LABEL[ch]} not given`);
+  }
+  for (const channel of channels) await recordConsent(ctx, customerId, { ...b, channel, version: undefined }, req);
+  return { messageId: (b.action === 'GIVE' ? 'CU-31' : 'CU-32') as MessageId, params: { name: person.name, channels: channels.map((c) => CHANNEL_LABEL[c]).join(', ') } };
 }

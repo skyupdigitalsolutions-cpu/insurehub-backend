@@ -57,6 +57,8 @@ async function linkVisible(ctx: AuthContext, type: string, id: string): Promise<
     case 'PROFILE': return id === ctx.accountId;
     case 'KYC_REVIEW': return ctx.role === 'STF' || ctx.role === 'ADM';
     case 'RENEWAL': { const { RenewalCycle } = await import('../renewals/renewal.model.js'); return !!(await RenewalCycle.exists({ _id: id, accountId: ctx.accountId })); }
+    case 'PRODUCT': { const { Product } = await import('../catalogue/product.model.js'); return !!(await Product.exists({ _id: id, $or: [{ kind: 'VERIFIED' }, { kind: 'OWN', accountId: ctx.accountId }] })); }
+    case 'CAMPAIGN': { const { Connection } = await import('../campaigns/campaign.model.js'); return !!(await Connection.exists({ _id: id, accountId: ctx.accountId })); }
     default: return false;
   }
 }

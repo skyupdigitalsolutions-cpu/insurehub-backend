@@ -175,7 +175,8 @@ describe('P-06 KYC', () => {
 
     await submit(a, { nameOnPan: 'Asha Rao K' }); // corrected and submitted again
     item = (await A.get(`/admin/kyc/${a.adv.user.accountId}`)).body.data;
-    const ver = await A.post(`/admin/kyc/${a.adv.user.accountId}/decision`, { version: item.version, decision: 'VERIFY' });
+    expect(err(await A.post(`/admin/kyc/${a.adv.user.accountId}/decision`, { version: item.version, decision: 'VERIFY' }))).toMatchObject({ status: 403, messageId: 'AUTH-26' }); // Verify needs the OTP
+    const ver = await A.post(`/admin/kyc/${a.adv.user.accountId}/decision`, { version: item.version, decision: 'VERIFY' }, { 'X-Step-Up-Token': await stepUp(admin.token, admin.mobile) });
     expect(ver.body.meta).toMatchObject({ messageId: 'PRF-05', message: 'Your KYC has been verified.' });
     expect(await Notification.countDocuments({ userId: a.adv.user.id, kind: 'KYC_VERIFIED' })).toBe(1);
     expect(await AuditLog.countDocuments({ action: { $in: ['KYC_VERIFIED', 'KYC_REJECTED'] } })).toBe(2);
@@ -189,7 +190,7 @@ describe('P-06 KYC', () => {
     const a = await advisor();
     await submit(a);
     const version = (await as(admin.token).get(`/admin/kyc/${a.adv.user.accountId}`)).body.data.version;
-    expect((await as(admin.token).post(`/admin/kyc/${a.adv.user.accountId}/decision`, { version, decision: 'VERIFY' })).status).toBe(200);
+    expect((await as(admin.token).post(`/admin/kyc/${a.adv.user.accountId}/decision`, { version, decision: 'VERIFY' }, { 'X-Step-Up-Token': await stepUp(admin.token, admin.mobile) })).status).toBe(200);
     const second = await as(staff.token).post(`/admin/kyc/${a.adv.user.accountId}/decision`, { version, decision: 'REJECT', reason: 'PAN invalid' });
     expect(err(second)).toMatchObject({ status: 409, messageId: 'GEN-04' });
     expect((await a.c.get('/kyc')).body.data.status).toBe('VERIFIED');
@@ -200,7 +201,7 @@ describe('P-06 KYC', () => {
     const a = await advisor();
     await submit(a);
     const v = (await as(admin.token).get(`/admin/kyc/${a.adv.user.accountId}`)).body.data.version;
-    await as(admin.token).post(`/admin/kyc/${a.adv.user.accountId}/decision`, { version: v, decision: 'VERIFY' });
+    await as(admin.token).post(`/admin/kyc/${a.adv.user.accountId}/decision`, { version: v, decision: 'VERIFY' }, { 'X-Step-Up-Token': await stepUp(admin.token, admin.mobile) });
     const ask = await submit(a, { nameOnPan: 'Asha R Rao' });
     expect(err(ask)).toMatchObject({ status: 409, messageId: 'PRF-07' });
     expect((await a.c.get('/kyc')).body.data.status).toBe('VERIFIED');

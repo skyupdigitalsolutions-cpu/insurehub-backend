@@ -11,6 +11,7 @@ const proposalSchema = new Schema(
     accountId: { type: String, required: true },
     quotationId: { type: String, required: true },
     revision: { type: Number, required: true },
+    variantId: { type: String, default: null }, // change #2: from the quotation revision
     customerId: { type: String, required: true },
     number: { type: String, required: true }, // PR-YYYYMM-NNNNN
     status: { type: String, enum: ['DRAFT', 'SUBMITTED', 'DECLINED'], default: 'DRAFT' },

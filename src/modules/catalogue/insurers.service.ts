@@ -5,7 +5,7 @@ import { AppError } from '../../lib/errors.js';
 import { msg } from '../../lib/messages.js';
 import { isDuplicateKey } from '../../lib/mongo.js';
 import { audit } from '../audit/audit.service.js';
-import { useStepUp } from '../auth/stepUp.js';
+import { assertStepUp, useStepUp } from '../auth/stepUp.js';
 import { Insurer, type InsurerDoc } from '../insurers/insurer.model.js';
 import { InsurerMapping } from '../insurers/mapping.model.js';
 import type { AuthContext } from '../rbac/capabilities.js';
@@ -61,6 +61,7 @@ export async function get(ctx: AuthContext, id: string) { return view(await load
 
 /** + Insurer: Save draft (CAT-01) or Submit for approval (CAT-02). */
 export async function create(ctx: AuthContext, b: Values & { submit?: boolean }, req: Request) {
+  if (b.submit) assertStepUp(req); // publishing directly needs the OTP (no admin approval)
   await assertUnique(b);
   let d;
   try {
@@ -69,7 +70,8 @@ export async function create(ctx: AuthContext, b: Values & { submit?: boolean },
     });
   } catch (e) { dupToField(e); }
   await audit({ entity: 'insurer', entityId: d!._id, action: b.submit ? 'INSURER_SUBMITTED' : 'INSURER_DRAFT_SAVED', after: pick(b) }, { req });
-  return { insurer: view(d!.toObject() as InsurerDoc, ctx), messageId: (b.submit ? 'CAT-02' : 'CAT-01') as 'CAT-01' | 'CAT-02', params: { Item: b.name } };
+  if (b.submit) return publishNow(ctx, d!._id as string, req, true);
+  return { insurer: view(d!.toObject() as InsurerDoc, ctx), messageId: 'CAT-01' as const, params: { Item: b.name } };
 }
 
 /**
@@ -79,6 +81,7 @@ export async function create(ctx: AuthContext, b: Values & { submit?: boolean },
  */
 export async function edit(ctx: AuthContext, id: string, b: Partial<Values> & { version: number; submit?: boolean }, req: Request) {
   const d = await load(id);
+  if (b.submit || (d.status !== 'DRAFT' && d.status !== 'PENDING_APPROVAL')) assertStepUp(req); // it goes live now
   const changes = pick(b as Record<string, unknown>);
   await assertUnique(changes, id);
   if (d.status === 'PENDING_APPROVAL') throw AppError.invalidState('insurer', 'PENDING APPROVAL');
@@ -93,7 +96,8 @@ export async function edit(ctx: AuthContext, id: string, b: Partial<Values> & { 
     } catch (e) { dupToField(e); }
     if (!u) throw AppError.versionConflict('insurer', view(await load(id), ctx));
     await audit({ entity: 'insurer', entityId: id, action: b.submit ? 'INSURER_SUBMITTED' : 'INSURER_DRAFT_SAVED', before: valuesOf(d), after: valuesOf(u) }, { req });
-    return { insurer: view(u, ctx), messageId: (b.submit ? 'CAT-02' : 'CAT-01') as 'CAT-01' | 'CAT-02', params: { Item: u.name } };
+    if (b.submit) return publishNow(ctx, id, req, true);
+    return { insurer: view(u, ctx), messageId: 'CAT-01' as const, params: { Item: u.name } };
   }
   if (d.pendingChange?.status === 'PENDING') throw new AppError(409, 'INVALID_STATE', 'CAT-08');
   const base = d.pendingChange?.status === 'REJECTED' ? (d.pendingChange.values as Values) : valuesOf(d); // a rejected change keeps its values
@@ -105,11 +109,12 @@ export async function edit(ctx: AuthContext, id: string, b: Partial<Values> & { 
   ).lean<InsurerDoc>();
   if (!u) throw AppError.versionConflict('insurer', view(await load(id), ctx));
   await audit({ entity: 'insurer', entityId: id, action: 'INSURER_CHANGE_SUBMITTED', before: valuesOf(d), after: values }, { req });
-  return { insurer: view(u, ctx), messageId: 'CAT-02' as const, params: { Item: values.name } };
+  return publishNow(ctx, id, req, false);
 }
 
 /** Submit a DRAFT (or a rejected pending change) for approval. */
 export async function submit(ctx: AuthContext, id: string, b: { version: number }, req: Request) {
+  assertStepUp(req);
   const d = await load(id);
   let u: InsurerDoc | null = null;
   if (d.status === 'DRAFT') {
@@ -119,20 +124,20 @@ export async function submit(ctx: AuthContext, id: string, b: { version: number 
   } else throw AppError.invalidState('insurer', d.status.replace('_', ' '));
   if (!u) throw AppError.versionConflict('insurer', view(await load(id), ctx));
   await audit({ entity: 'insurer', entityId: id, action: 'INSURER_SUBMITTED' }, { req });
-  return { insurer: view(u, ctx), messageId: 'CAT-02' as const, params: { Item: u.name } };
+  return publishNow(ctx, id, req, d.status === 'DRAFT');
 }
 
 /**
  * Approve (P-20 step 3). The approver must not be the maker (CAT-05). Conditional on the version and on the item
  * still waiting, so when two approvers act at once the second gets GEN-04.
  */
-export async function approve(ctx: AuthContext, id: string, b: { version: number }, req: Request) {
+export async function approve(ctx: AuthContext, id: string, b: { version: number }, req: Request, opts: { direct?: boolean } = {}) {
   const d = await load(id);
   const waitingNew = d.status === 'PENDING_APPROVAL';
   const waitingChange = d.pendingChange?.status === 'PENDING';
   if (!waitingNew && !waitingChange) throw AppError.invalidState('insurer', d.status.replace('_', ' '));
   const maker = waitingNew ? d.makerId : d.pendingChange!.makerId;
-  if (maker === ctx.userId) throw new AppError(403, 'FORBIDDEN', 'CAT-05'); // AC-P20-2
+  if (maker === ctx.userId && !opts.direct) throw new AppError(403, 'FORBIDDEN', 'CAT-05'); // only for items left waiting from before
   const now = clock.now();
   let u: InsurerDoc | null;
   if (waitingNew) {
@@ -150,8 +155,8 @@ export async function approve(ctx: AuthContext, id: string, b: { version: number
     throw AppError.versionConflict('insurer', view(cur, ctx));
   }
   await useStepUp(req.stepUpId, 'CATALOGUE_APPROVED', null); // one OTP, one decision
-  await audit({ entity: 'insurer', entityId: id, action: waitingNew ? 'INSURER_APPROVED' : 'INSURER_CHANGE_APPROVED', before: valuesOf(d), after: valuesOf(u) }, { req });
-  return { insurer: view(u, ctx), messageId: 'CAT-03' as const, params: { Item: u.name } };
+  await audit({ entity: 'insurer', entityId: id, action: opts.direct ? (waitingNew ? 'INSURER_PUBLISHED' : 'INSURER_CHANGE_APPLIED') : (waitingNew ? 'INSURER_APPROVED' : 'INSURER_CHANGE_APPROVED'), before: valuesOf(d), after: valuesOf(u) }, { req });
+  return { insurer: view(u, ctx), messageId: (opts.direct ? (waitingNew ? 'CAT-42' : 'CAT-43') : 'CAT-03') as 'CAT-03' | 'CAT-42' | 'CAT-43', params: { Item: u.name } };
 }
 
 /** Reject with a reason (CAT-04). A new insurer goes back to DRAFT; a change is kept as REJECTED. Values are kept. */
@@ -207,4 +212,21 @@ export async function approvals(ctx: AuthContext) {
       ...(isNew ? {} : { current: valuesOf(d), proposed: d.pendingChange!.values }),
     };
   }).sort((a, b) => new Date(a.at ?? 0).getTime() - new Date(b.at ?? 0).getTime());
+}
+
+/**
+ * No admin approval (client decision, OPEN-QUESTIONS Q92): what used to wait for a second admin is published now,
+ * through the same checks and single update as approval, with the OTP and the actor in the audit log. If a publish
+ * check fails, the item is not left waiting for an approval that no longer exists: a new insurer goes back to DRAFT
+ * and a change is marked REJECTED, both with the reason, and the error is returned.
+ */
+async function publishNow(ctx: AuthContext, id: string, req: Request, isNew: boolean) {
+  const cur = await load(id);
+  try { return await approve(ctx, id, { version: cur.version }, req, { direct: true }); }
+  catch (e) {
+    const reason = (e as Error).message?.slice(0, 200) || 'Could not publish';
+    if (isNew) await Insurer.updateOne({ _id: id, status: 'PENDING_APPROVAL' }, { $set: { status: 'DRAFT', rejectReason: reason }, $inc: { version: 1 } });
+    else await Insurer.updateOne({ _id: id, 'pendingChange.status': 'PENDING' }, { $set: { 'pendingChange.status': 'REJECTED', 'pendingChange.reason': reason }, $inc: { version: 1 } });
+    throw e;
+  }
 }

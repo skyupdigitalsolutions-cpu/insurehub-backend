@@ -3,7 +3,7 @@ import type { ClientSession } from 'mongoose';
 import { cfgList } from '../../config/cfg.js';
 import { AppError } from '../../lib/errors.js';
 import { isSourceCode, sourceCodeOf, sourceDef, sourceLabel, type LeadSourceCode } from '../../lib/leadSources.js';
-import { clock } from '../../lib/clock.js';
+import { clock, istToday } from '../../lib/clock.js';
 import { nameKey } from '../../lib/fields.js';
 import { newId } from '../../lib/ids.js';
 import { msg, type MessageId, type MessageParams } from '../../lib/messages.js';
@@ -168,15 +168,24 @@ export async function listPipelines(ctx: AuthContext) {
   }));
 }
 
-export async function listLeads(ctx: AuthContext, q: { page: number; limit?: number; pipelineId?: string; status?: string; source?: string; priority?: string; search?: string }) {
+export async function listLeads(ctx: AuthContext, q: { page: number; limit?: number; pipelineId?: string; status?: string; source?: string; priority?: string; search?: string; followUp?: 'today' | 'overdue'; campaignId?: string }) {
   const filter: Record<string, unknown> = { accountId: accountOf(ctx) };
   const and: Array<Record<string, unknown>> = [];
-  for (const k of ['pipelineId', 'status', 'priority'] as const) if (q[k]) filter[k] = q[k];
+  for (const k of ['pipelineId', 'priority'] as const) if (q[k]) filter[k] = q[k];
+  // Change #19: one status or several (comma-separated).
+  if (q.status) { const st = q.status.split(',').map((s) => s.trim()).filter(Boolean); filter.status = st.length === 1 ? st[0] : { $in: st }; }
   if (q.source) {
-    // A code or a label; rows saved before the migration match on their label.
-    const code = sourceCodeOf(q.source);
-    and.push(code ? { $or: [{ sourceCode: code }, { sourceCode: null, source: sourceLabel(code) }] } : { source: q.source });
+    // Codes or labels, one or several; rows saved before the code migration match on their label.
+    const parts = q.source.split(',').map((s) => s.trim()).filter(Boolean);
+    and.push({ $or: parts.flatMap((v): Array<Record<string, unknown>> => { const code = sourceCodeOf(v); return code ? [{ sourceCode: code }, { sourceCode: null, source: sourceLabel(code) }] : [{ source: v }]; }) });
   }
+  if (q.followUp) {
+    const dayStart = new Date(`${istToday()}T00:00:00+05:30`);
+    const dayEnd = new Date(dayStart.getTime() + 86_400_000);
+    filter.isOpen = true;
+    filter.nextFollowUpAt = q.followUp === 'today' ? { $gte: dayStart, $lt: dayEnd } : { $lt: clock.now() };
+  }
+  if (q.campaignId) and.push(q.campaignId.startsWith('cnx_') ? { 'adRef.connectionId': q.campaignId } : { 'adRef.formId': q.campaignId });
   if (q.search) {
     const digits = q.search.replace(/\D/g, '');
     const rx = new RegExp(escapeRegex(q.search), 'i');
@@ -449,5 +458,54 @@ export async function convertLead(ctx: AuthContext, id: string, b: { version: nu
     outcome: b.mode === 'CREATE' ? 'CREATED' : 'LINKED',
     messageId: (b.mode === 'CREATE' ? 'LD-10' : 'LD-11') as MessageId,
     params,
+  };
+}
+
+/**
+ * Change #20: the lead's timeline in one list, newest first, optionally only some kinds of entry, with the aggregates
+ * the side panel shows (contacts, last activity, lead age in days). Messages and quotations follow the lead onto its
+ * customer after conversion.
+ */
+export async function timeline(ctx: AuthContext, id: string, types?: string[]) {
+  const lead = await loadLead(ctx, id);
+  const want = (t: string) => !types?.length || types.includes(t);
+  const accountId = accountOf(ctx);
+  type Item = { type: string; at: Date; title: string; detail?: string | null; by?: string | null; refId?: string | null };
+  const items: Item[] = [];
+  if (want('CONTACT')) for (const c of lead.contacts ?? []) items.push({ type: 'CONTACT', at: c.at, title: c.outcome, detail: c.note ?? null, by: c.by, refId: c._id });
+  if (want('STATUS')) for (const h of lead.stageHistory ?? []) items.push({ type: 'STATUS', at: h.at, title: h.from ? `${h.from} → ${h.to}` : `Created as ${h.to}`, by: h.by ?? null });
+  const { Task } = await import('../tasks/task.model.js');
+  if (want('TASK') || want('FOLLOW_UP')) {
+    const tasks = await Task.find({ accountId, linkedType: 'LEAD', linkedId: lead._id }, { title: 1, dueAt: 1, status: 1, kind: 1, createdBy: 1 }).lean<Array<{ _id: string; title: string; dueAt: Date; status: string; kind: string; createdBy: string | null }>>();
+    for (const t of tasks) {
+      const type = t.kind === 'LEAD_FOLLOW_UP' ? 'FOLLOW_UP' : 'TASK';
+      if (want(type)) items.push({ type, at: t.dueAt, title: t.title, detail: t.status, by: t.createdBy, refId: t._id });
+    }
+  }
+  const { Outbox } = await import('../comms/outbox.model.js');
+  if (want('MESSAGE')) {
+    const keys = [`L:${lead._id}`, ...(lead.customerId ? [`C:${lead.customerId}`] : [])];
+    const msgs = await Outbox.find({ accountId, personKey: { $in: keys } }, { channel: 1, purpose: 1, status: 1, createdAt: 1 }).sort({ createdAt: -1 }).limit(200).lean<Array<{ _id: string; channel: string; purpose: string; status: string; createdAt: Date }>>();
+    for (const m of msgs) items.push({ type: 'MESSAGE', at: m.createdAt, title: `${m.channel} · ${m.purpose}`, detail: m.status, refId: m._id });
+  }
+  if (want('QUOTATION') && lead.customerId) {
+    const { Quotation } = await import('../quotations/quotation.model.js');
+    const qs = await Quotation.find({ accountId, customerId: lead.customerId }, { number: 1, status: 1, createdAt: 1 }).lean<Array<{ _id: string; number: string | null; status: string; createdAt: Date }>>();
+    for (const x of qs) items.push({ type: 'QUOTATION', at: x.createdAt, title: x.number ?? 'Draft quotation', detail: x.status, refId: x._id });
+  }
+  if (want('CALL')) {
+    const { Call } = await import('../calls/call.model.js');
+    const calls = await Call.find({ accountId, leadId: lead._id }, { callType: 1, at: 1, durationSec: 1, userId: 1 }).lean<Array<{ _id: string; callType: string; at: Date; durationSec: number; userId: string }>>();
+    for (const c of calls) items.push({ type: 'CALL', at: c.at, title: `Call (${c.callType})`, detail: `${c.durationSec} s`, by: c.userId, refId: c._id });
+  }
+  items.sort((a, b) => b.at.getTime() - a.at.getTime());
+  const activity = [...(lead.contacts ?? []).map((c) => c.at.getTime()), ...(lead.stageHistory ?? []).map((h) => h.at.getTime()), new Date(lead.updatedAt ?? lead.createdAt).getTime()];
+  return {
+    items,
+    aggregates: {
+      contactsCount: (lead.contacts ?? []).length,
+      lastActivityAt: new Date(Math.max(...activity)),
+      ageDays: Math.floor((clock.now().getTime() - new Date(lead.createdAt).getTime()) / 86_400_000),
+    },
   };
 }

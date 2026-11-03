@@ -47,7 +47,10 @@ export function adminCommsRoutes() {
   r.get('/templates', async (_req, res) => sendData(res, await svc.listTemplates()));
   r.post('/templates', writable, validate({ body: z.object({ name: required(shortText()), channel: required(enumOf(['EMAIL', 'WHATSAPP'] as const)), purpose: required(enumOf(PURPOSES)), language: optional(shortText()), subject: optional(shortText()), body: required(z.string().min(1).max(5000)) }).strict() }, { name: 'Name', channel: 'Channel', purpose: 'Purpose', body: 'Message' }), async (req, res) =>
     sendData(res, await svc.createTemplate(req.auth!, req.body, req), 201));
-  r.post('/templates/:id/submit', writable, validate({ params: tid }), async (req, res) => sendDone(res, await svc.submitTemplate(req.auth!, String(req.params.id), req), 'GEN-07'));
+  r.post('/templates/:id/submit', writable, requireStepUp, validate({ params: tid }), async (req, res) => {
+    const out = await svc.submitTemplate(req.auth!, String(req.params.id), req); // publish (email) or send to Meta (WhatsApp)
+    sendDone(res, out.template, out.messageId, (out as { params?: Record<string, string> }).params ?? {});
+  });
   r.post('/templates/:id/approve', allow('templates.approve'), requireStepUp, validate({ params: tid }), async (req, res) => {
     const out = await svc.approveTemplate(req.auth!, String(req.params.id), req);
     sendDone(res, out.template, out.messageId);

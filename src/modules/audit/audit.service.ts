@@ -57,6 +57,7 @@ export async function audit(input: AuditInput, opts: { req?: Request; ctx?: Auth
     result: input.result ?? 'SUCCESS',
     requestId: opts.req?.requestId ?? null,
     ip: opts.req?.ip ?? null,
+    device: deviceOf(opts.req?.headers?.['user-agent'] as string | undefined, opts.req?.headers?.['x-client'] as string | undefined),
     stepUpId: input.stepUpId ?? null,
   };
   if (opts.session) {
@@ -68,4 +69,24 @@ export async function audit(input: AuditInput, opts: { req?: Request; ctx?: Auth
   } catch (err) {
     logger.error({ err, action: input.action }, 'Audit write failed');
   }
+}
+
+/** Change #58: a short, readable device summary from the user agent (never the raw string). */
+export function deviceOf(ua?: string, client?: string): string | null {
+  if (!ua && !client) return null;
+  const u = ua ?? '';
+  const os = /Android/i.test(u) ? 'Android' : /iPhone|iPad|iOS/i.test(u) ? 'iOS' : /Windows/i.test(u) ? 'Windows' : /Mac OS X|Macintosh/i.test(u) ? 'macOS' : /Linux/i.test(u) ? 'Linux' : null;
+  // The user agent decides first: a recognisable browser is a browser even when the request carries X-Client: app.
+  const browser = /okhttp|Bimayantra/i.test(u) ? null : /Edg\//.test(u) ? 'Edge' : /OPR\/|Opera/.test(u) ? 'Opera' : /Firefox\//.test(u) ? 'Firefox' : /Chrome\//.test(u) ? 'Chrome' : /Safari\//.test(u) ? 'Safari' : null;
+  if (browser) return os ? `${browser} on ${os}` : browser;
+  if (client === 'app' || /okhttp|Bimayantra/i.test(u)) return `Bimayantra app${os ? ` on ${os}` : ''}`;
+  return os ?? 'Other';
+}
+/** Change #58: the IP as screens show it (masked): 203.0.113.42 → 203.0.•.•; IPv6 keeps its first two groups. */
+export function maskIp(ip?: string | null): string | null {
+  if (!ip) return null;
+  const v4 = ip.replace(/^::ffff:/, '');
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(v4)) { const p = v4.split('.'); return `${p[0]}.${p[1]}.•.•`; }
+  const g = ip.split(':').filter(Boolean);
+  return g.length >= 2 ? `${g[0]}:${g[1]}:•` : '•';
 }

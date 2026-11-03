@@ -60,10 +60,10 @@ async function setup() {
   const saved = (await S.put(`/admin/product-versions/${c.version.id}`, { rev: c.version.rev, data: DATA })).body.data;
   return { staff, admin, S, productId: c.productId as string, vid: c.version.id as string, rev: saved.rev as number };
 }
+/** Publish a version (no admin approval: staff publishes it with the OTP). */
 async function publish(s: Awaited<ReturnType<typeof setup>>, vid = s.vid) {
   const v = await ProductVersion.findById(vid).lean();
-  const sub = (await s.S.post(`/admin/product-versions/${vid}/submit`, { rev: v!.rev })).body.data;
-  return as(s.admin.token).post(`/admin/product-versions/${vid}/approve`, { rev: sub.rev }, { 'X-Step-Up-Token': await stepUp(s.admin.token, s.admin.mobile) });
+  return s.S.post(`/admin/product-versions/${vid}/submit`, { rev: v!.rev }, { 'X-Step-Up-Token': await stepUp(s.staff.token, s.staff.mobile) });
 }
 
 describe('P-58 corrections', () => {
@@ -80,18 +80,31 @@ describe('P-58 corrections', () => {
     expect(err(await as(adv.token).post(`/products/${s.productId}/corrections`, { field: 'features.ped_wait', proposedValue: '30', reason: 'Another page says 30 months' }))).toMatchObject({ status: 409, messageId: 'CAT-08' });
   });
 
-  it('AC-P58-2: an accepted correction is in a new DRAFT with its ID (CAT-39); advisors see it only after a different ADM approves', async () => {
+  it('AC-P58-2 (changed): Accept and publish needs the OTP, puts the value in a new version with its ID and makes it live at once (CAT-44)', async () => {
     const s = await setup();
     await publish(s);
     const adv = await registerAdvisor('Asha Rao');
     const cor = (await as(adv.token).post(`/products/${s.productId}/corrections`, { field: 'features.ped_wait', proposedValue: '36', reason: 'Brochure says 3 years' })).body.data;
     expect((await s.S.get('/admin/corrections')).body.data.map((x: { id: string; product: string }) => `${x.id}:${x.product}`)).toEqual([`${cor.id}:Family Shield`]);
-    const acc = (await s.S.post(`/admin/corrections/${cor.id}/accept`, {})).body.data;
-    const draft = await ProductVersion.findById(acc.draftVersionId).lean();
-    expect(draft).toMatchObject({ status: 'DRAFT', number: 2, data: { features: { ped_wait: { value: 36 } } }, corrections: [{ correctionId: cor.id, field: 'features.ped_wait' }] });
+    expect(err(await s.S.post(`/admin/corrections/${cor.id}/accept`, {}))).toMatchObject({ messageId: 'AUTH-26' });
+    const acc = (await s.S.post(`/admin/corrections/${cor.id}/accept`, {}, { 'X-Step-Up-Token': await stepUp(s.staff.token, s.staff.mobile) })).body.data;
+    expect(acc.published).toBe(true);
+    expect(await ProductVersion.findById(acc.draftVersionId).lean()).toMatchObject({ status: 'PUBLISHED', number: 2, data: { features: { ped_wait: { value: 36 } } }, corrections: [{ correctionId: cor.id, field: 'features.ped_wait' }] });
+    expect((await as(adv.token).get(`/products/${s.productId}`)).body.data.publishedVersion.data.features.ped_wait.value).toBe(36);
+    expect((await Notification.findOne({ messageId: 'CAT-44' }).lean())!.message).toBe('SkyUp accepted your correction to Family Shield. It is live now.');
+  });
+
+  it('when someone already has a draft open, an accepted correction waits in that draft (CAT-39) and goes live when it is published', async () => {
+    const s = await setup();
+    await publish(s);
+    await s.S.post(`/admin/products/${s.productId}/versions`, {}); // a colleague's draft is open
+    const adv = await registerAdvisor('Asha Rao');
+    const cor = (await as(adv.token).post(`/products/${s.productId}/corrections`, { field: 'features.ped_wait', proposedValue: '36', reason: 'Brochure says 3 years' })).body.data;
+    const acc = (await s.S.post(`/admin/corrections/${cor.id}/accept`, {})).body.data; // nothing is published, so no OTP is needed
+    expect(acc.published).toBe(false);
     const seen = async () => (await as(adv.token).get(`/products/${s.productId}`)).body.data.publishedVersion.data.features.ped_wait.value;
-    expect(await seen()).toBe(24); // not yet
-    expect((await Notification.findOne({ messageId: 'CAT-39' }).lean())!.message).toBe('SkyUp accepted your correction to Family Shield. It will apply once the new version is approved.');
+    expect(await seen()).toBe(24);
+    expect((await Notification.findOne({ messageId: 'CAT-39' }).lean())!.message).toBe('SkyUp accepted your correction to Family Shield. It will apply when the updated version is published.');
     await publish(s, acc.draftVersionId);
     expect(await seen()).toBe(36);
   });

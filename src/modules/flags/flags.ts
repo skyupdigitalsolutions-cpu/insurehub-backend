@@ -43,6 +43,10 @@ export const FLAGS = {
     scope: 'ACCOUNT', default: false, ref: 'Change #1, §7.4 step 8',
     description: 'Meta Ads lead forms can be connected and their leads imported (needs Meta app review).',
   },
+  campaigns_linkedin: {
+    scope: 'ACCOUNT', default: false, ref: 'Change #1 (client request: LinkedIn Lead Gen Forms)',
+    description: 'LinkedIn Lead Gen Forms can be connected and their leads imported (needs LinkedIn Lead Sync API access).',
+  },
 } as const satisfies Record<string, FlagDef>;
 
 export type FlagKey = keyof typeof FLAGS;

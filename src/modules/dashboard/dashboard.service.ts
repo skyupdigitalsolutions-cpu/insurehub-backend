@@ -87,3 +87,91 @@ export async function profileCard(ctx: AuthContext) {
   const p = await getProfile(ctx);
   return p.completion.percent >= 100 ? { hidden: true } : { hidden: false, percent: p.completion.percent, missing: p.completion.missing, message: p.completion.message ?? null };
 }
+// ════════ Change #22: the new dashboard widgets (and real counts for widgets that waited on later modules) ════════
+import { clock as nowClock, istToday as todayIst } from '../../lib/clock.js';
+import { LEAD_SOURCE_CODES, sourceLabel as labelOf } from '../../lib/leadSources.js';
+const istDayStart = () => new Date(`${todayIst()}T00:00:00+05:30`);
+const istMonthStart = () => new Date(`${todayIst().slice(0, 7)}-01T00:00:00+05:30`);
+
+/** Leads at a glance: the total and the count per status (every status, Converted and Lost included). */
+export async function leadStatusCounts(ctx: AuthContext) {
+  const rows = await Lead.aggregate<{ _id: string; n: number }>([{ $match: { accountId: ctx.accountId } }, { $group: { _id: '$status', n: { $sum: 1 } } }]);
+  const byStatus: Record<string, number> = { NEW: 0, CONTACTED: 0, QUALIFIED: 0, FOLLOW_UP: 0, CONVERTED: 0, LOST: 0 };
+  for (const r of rows) byStatus[r._id] = r.n;
+  const total = Object.values(byStatus).reduce((a, b) => a + b, 0);
+  return { total, byStatus, opens: { list: 'LEADS', filter: {} }, ...empty(total) };
+}
+/** Follow-ups due today and overdue (open leads, IST day). */
+export async function followUps(ctx: AuthContext) {
+  const start = istDayStart(); const end = new Date(start.getTime() + 86_400_000);
+  const [dueToday, overdue] = await Promise.all([
+    Lead.countDocuments({ accountId: ctx.accountId, isOpen: true, nextFollowUpAt: { $gte: start, $lt: end } }),
+    Lead.countDocuments({ accountId: ctx.accountId, isOpen: true, nextFollowUpAt: { $lt: nowClock.now() } }),
+  ]);
+  return { dueToday, overdue, opens: { list: 'LEADS', filter: { followUp: 'today' } }, opensOverdue: { list: 'LEADS', filter: { followUp: 'overdue' } }, ...empty(dueToday + overdue) };
+}
+/** Lead sources this month: count and share per source (percentages to one decimal). */
+export async function leadSources(ctx: AuthContext) {
+  const rows = await Lead.aggregate<{ _id: { code: string | null; label: string }; n: number }>([
+    { $match: { accountId: ctx.accountId, createdAt: { $gte: istMonthStart() } } },
+    { $group: { _id: { code: '$sourceCode', label: '$source' }, n: { $sum: 1 } } },
+  ]);
+  const merged = new Map<string, { code: string | null; label: string; count: number }>();
+  for (const r of rows) {
+    const code = r._id.code && (LEAD_SOURCE_CODES as readonly string[]).includes(r._id.code) ? r._id.code : null;
+    const key = code ?? `label:${r._id.label}`;
+    const cur = merged.get(key) ?? { code, label: code ? labelOf(code as never) : r._id.label, count: 0 };
+    cur.count += r.n; merged.set(key, cur);
+  }
+  const total = [...merged.values()].reduce((a, b) => a + b.count, 0);
+  const sources = [...merged.values()].sort((a, b) => b.count - a.count).map((s) => ({ ...s, percent: total ? Math.round((s.count * 1000) / total) / 10 : 0 }));
+  return { total, sources, opens: { list: 'LEADS', filter: {} }, ...empty(total) };
+}
+/** Insurance catalogue: live products per insurance type the advisor can quote (SkyUp-verified and their own), and how many are new in the last 30 days. */
+export async function catalogueSummary(ctx: AuthContext) {
+  const { Product } = await import('../catalogue/product.model.js');
+  const { InsuranceType } = await import('../catalogue/types.model.js');
+  const since = new Date(nowClock.now().getTime() - 30 * 86_400_000);
+  const rows = await Product.aggregate<{ _id: string; n: number; fresh: number }>([
+    { $match: { status: { $in: ['ACTIVE', 'UPCOMING'] }, $or: [{ kind: 'VERIFIED' }, { kind: 'OWN', accountId: ctx.accountId }] } },
+    { $group: { _id: '$typeId', n: { $sum: 1 }, fresh: { $sum: { $cond: [{ $gte: ['$createdAt', since] }, 1, 0] } } } },
+  ]);
+  const names = new Map((await InsuranceType.find({ _id: { $in: rows.map((r) => r._id) } }, { name: 1 }).lean<Array<{ _id: string; name: string }>>()).map((t) => [t._id, t.name]));
+  const types = rows.map((r) => ({ typeId: r._id, name: names.get(r._id) ?? 'Other', products: r.n, newLast30Days: r.fresh })).sort((a, b) => a.name.localeCompare(b.name));
+  const total = types.reduce((a, b) => a + b.products, 0);
+  return { total, types, opens: { list: 'CATALOGUE', filter: {} }, ...empty(total) };
+}
+/** Ad leads today: leads imported from campaigns since midnight (IST), per channel. */
+export async function adLeadsToday(ctx: AuthContext) {
+  const { Submission } = await import('../campaigns/campaign.model.js');
+  const rows = await Submission.aggregate<{ _id: string; n: number }>([{ $match: { accountId: ctx.accountId, status: 'IMPORTED', createdAt: { $gte: istDayStart() } } }, { $group: { _id: '$channel', n: { $sum: 1 } } }]);
+  const byChannel = Object.fromEntries(rows.map((r) => [r._id, r.n]));
+  const count = rows.reduce((a, b) => a + b.n, 0);
+  return { count, byChannel, opens: { list: 'CAMPAIGNS', filter: { tab: 'log', status: 'IMPORTED' } }, ...empty(count) };
+}
+/** Open quotations (ready or shared), now that Module 10 exists. */
+export async function openQuotations(ctx: AuthContext) {
+  const { Quotation } = await import('../quotations/quotation.model.js');
+  const count = await Quotation.countDocuments({ accountId: ctx.accountId, status: { $in: ['READY', 'SHARED'] } });
+  return { count, available: true, opens: { list: 'QUOTATIONS', filter: { status: ['READY', 'SHARED'] } }, ...empty(count) };
+}
+/** Policies in force (issued), now that Module 12 exists. */
+export async function policiesInForce(ctx: AuthContext) {
+  const { Policy } = await import('../policies/policy.model.js');
+  const count = await Policy.countDocuments({ accountId: ctx.accountId, status: 'ISSUED' });
+  return { count, available: true, opens: { list: 'POLICIES', filter: { status: ['ISSUED'] } }, ...empty(count) };
+}
+/** Renewals due cards: due now, in follow-up, coming in the next 30 days, and lapsed this month. */
+export async function renewalsDue(ctx: AuthContext) {
+  const { RenewalCycle } = await import('../renewals/renewal.model.js');
+  const today = todayIst();
+  const in30 = new Date(new Date(`${today}T00:00:00Z`).getTime() + 30 * 86_400_000).toISOString().slice(0, 10);
+  const [due, inFollowUp, upcoming30, lapsedThisMonth] = await Promise.all([
+    RenewalCycle.countDocuments({ accountId: ctx.accountId, status: 'DUE' }),
+    RenewalCycle.countDocuments({ accountId: ctx.accountId, status: 'IN_FOLLOW_UP' }),
+    RenewalCycle.countDocuments({ accountId: ctx.accountId, status: 'UPCOMING', dueDate: { $lte: in30 } }),
+    RenewalCycle.countDocuments({ accountId: ctx.accountId, status: 'LAPSED', updatedAt: { $gte: istMonthStart() } }),
+  ]);
+  const count = due + inFollowUp;
+  return { count, cards: { due, inFollowUp, upcoming30, lapsedThisMonth }, available: true, opens: { list: 'RENEWALS', filter: { status: ['DUE', 'IN_FOLLOW_UP'] } }, ...empty(count) };
+}

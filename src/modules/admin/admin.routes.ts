@@ -69,11 +69,17 @@ export function adminRoutes() {
   const chg = z.object({ id: z.string().regex(/^cfc_[a-f0-9]{28}$/) });
   r.get('/config', allow('config.manage'), async (_req, res) => sendData(res, svc.configList()));
   r.get('/config/history', allow('config.manage'), async (_req, res) => sendData(res, await svc.configHistory()));
-  r.post('/config/:id/changes', allow('config.manage'), validate({ params: z.object({ id: z.string().regex(/^CFG-\d{1,3}$/) }), body: z.object({ value: z.unknown(), reason: required(shortText()) }).strict() }, { value: 'Value', reason: 'Reason' }), async (req, res) =>
-    sendDone(res, await svc.requestConfigChange(req.auth!, String(req.params.id), req.body.value, req.body.reason, req), 'ADM-04', {}, 201));
+  r.post('/config/:id/changes', allow('config.manage'), requireStepUp, validate({ params: z.object({ id: z.string().regex(/^CFG-\d{1,3}$/) }), body: z.object({ value: z.unknown(), reason: required(shortText()) }).strict() }, { value: 'Value', reason: 'Reason' }), async (req, res) =>
+    sendDone(res, await svc.requestConfigChange(req.auth!, String(req.params.id), req.body.value, req.body.reason, req), 'ADM-06', {}, 201));
   r.post('/config/changes/:id/approve', allow('config.manage'), requireStepUp, validate({ params: chg }), async (req, res) => sendDone(res, await svc.decideConfigChange(req.auth!, String(req.params.id), true, req), 'ADM-06'));
   r.post('/config/changes/:id/reject', allow('config.manage'), validate({ params: chg }), async (req, res) => sendData(res, await svc.decideConfigChange(req.auth!, String(req.params.id), false, req)));
   r.get('/accounts', allow('accounts.admin'), async (_req, res) => sendData(res, await svc.accounts()));
+  // Changes #53, #54: subscriptions across advisors with invoice detail; the wallets overview
+  r.get('/subscriptions', allow('subscriptions.view'), validate({ query: z.object({ status: z.enum(['ALL', 'TRIAL', 'ACTIVE', 'GRACE', 'EXPIRED']).optional() }) }), async (req, res) =>
+    sendData(res, await svc.subscriptions(res.locals.query as { status?: string })));
+  r.get('/invoices/:id', allow('subscriptions.view'), validate({ params: z.object({ id: z.string().regex(/^sor_[a-f0-9]{28}$/) }) }), async (req, res) => sendData(res, await svc.invoice(String(req.params.id))));
+  r.get('/wallets', allow('wallets.view'), validate({ query: z.object({ filter: z.enum(['ALL', 'LOW', 'EMPTY']).optional() }) }), async (req, res) =>
+    sendData(res, await svc.wallets(res.locals.query as { filter?: 'ALL' | 'LOW' | 'EMPTY' })));
   r.post('/accounts/:id/suspend', allow('accounts.admin'), requireStepUp, validate({ params: accId, body: reason }, { reason: 'Reason' }), async (req, res) => { await svc.suspend(req.auth!, String(req.params.id), req.body.reason, req); sendDone(res, { status: 'SUSPENDED' }, 'ADM-07'); });
   r.post('/accounts/:id/reactivate', allow('accounts.admin'), requireStepUp, validate({ params: accId, body: reason }, { reason: 'Reason' }), async (req, res) => { await svc.reactivate(req.auth!, String(req.params.id), req.body.reason, req); sendDone(res, { status: 'ACTIVE' }, 'ADM-08'); });
   r.post('/accounts/:id/close', allow('accounts.admin'), requireStepUp, validate({ params: accId, body: reason }, { reason: 'Reason' }), async (req, res) => { const out = await svc.close(req.auth!, String(req.params.id), req.body.reason, req); sendDone(res, { status: 'CLOSED' }, 'ADM-09', out); });

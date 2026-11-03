@@ -31,6 +31,13 @@ export function campaignRoutes() {
   r.get('/submissions', validate({ query: z.object({ status: z.string().max(20).optional(), channel: z.string().max(20).optional(), connectionId: z.string().max(40).optional() }) }), async (req, res) =>
     sendData(res, await svc.submissions(req.auth!, req.query as Record<string, string>)));
   r.post('/submissions/:id/retry', ...m, validate({ params: z.object({ id: z.string().regex(/^sbm_[a-f0-9]{28}$/) }) }), async (req, res) => sendDone(res, await svc.retry(req.auth!, String(req.params.id), req), 'CMP-05'));
+  // Meta / LinkedIn: sign in, then choose Pages or ad accounts
+  r.get('/platforms', async (_req, res) => sendData(res, svc.platformReady()));
+  r.post('/oauth/:channel/start', ...m, validate({ params: z.object({ channel: z.enum(['meta', 'linkedin']) }) }), async (req, res) =>
+    sendData(res, await svc.oauthStart(req.auth!, String(req.params.channel).toUpperCase() as 'META' | 'LINKEDIN')));
+  r.get('/connections/:id/sources', allow('campaigns.manage'), validate({ params: cnx }), async (req, res) => sendData(res, await svc.sources(req.auth!, String(req.params.id))));
+  r.put('/connections/:id/sources', ...m, validate({ params: cnx, body: z.object({ ids: z.array(z.string().max(120)).max(100) }).strict() }), async (req, res) =>
+    sendDone(res, await svc.saveSources(req.auth!, String(req.params.id), req.body.ids, req), 'CMP-11'));
   r.get('/leads/:leadId/answers', validate({ params: z.object({ leadId: z.string().regex(/^led_[a-f0-9]{28}$/) }) }), async (req, res) => sendData(res, await svc.leadAnswers(req.auth!, String(req.params.leadId))));
   return r;
 }
@@ -39,6 +46,20 @@ export function campaignRoutes() {
 export function hookRoutes() {
   const r = Router();
   r.post('/google', async (req, res) => { const out = await svc.googleHook(req.body ?? {}); sendData(res, { received: true, status: out.submission.status, duplicate: out.duplicate }); });
+  // Meta: subscription check (GET, plain text) and signed lead webhooks
+  r.get('/meta', (req, res) => { res.type('text/plain').send(svc.metaVerify(req.query as Record<string, unknown>)); });
+  r.post('/meta', async (req, res) => sendData(res, await svc.metaHook(req)));
+  // LinkedIn: challenge (GET, JSON) and signed lead notifications
+  r.get('/linkedin', (req, res) => { res.json(svc.linkedinChallenge(String(req.query.challengeCode ?? ''))); });
+  r.post('/linkedin', async (req, res) => sendData(res, await svc.linkedinHook(req)));
+  // The platforms send the browser back here after sign-in; we return it to the Campaigns screen.
+  r.get('/oauth/:channel/callback', async (req, res) => {
+    const app = process.env.PUBLIC_APP_URL ?? 'http://localhost:5173';
+    const channel = String(req.params.channel).toUpperCase();
+    if ((channel !== 'META' && channel !== 'LINKEDIN') || req.query.error || !req.query.code) return res.redirect(302, `${app}/?campaigns=cancelled`);
+    try { const c = await svc.oauthCallback(channel, String(req.query.code), String(req.query.state ?? '')); res.redirect(302, `${app}/?campaigns=connected&connection=${c._id}`); }
+    catch { res.redirect(302, `${app}/?campaigns=error`); }
+  });
   r.post('/website', express.urlencoded({ extended: false, limit: '64kb' }), async (req, res) => {
     const key = (req.headers['x-bimayantra-key'] as string | undefined) ?? null;
     const out = await svc.websiteHook(req.body ?? {}, key, req.ip ?? '');

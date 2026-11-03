@@ -20,12 +20,17 @@ const connectionSchema = new Schema(
     pipelineId: { type: String, default: null },
     createdBy: { type: String, required: true },
     lastLeadAt: { type: Date, default: null },
+    /** Meta / LinkedIn: the signed-in person's token (encrypted), when it expires, and the Pages or ad accounts chosen. */
+    tokenEnc: { type: String, default: null }, tokenExpiresAt: { type: Date, default: null },
+    sources: { type: [new Schema({ id: String, name: String, tokenEnc: { type: String, default: null }, subscribed: { type: Boolean, default: false } }, { _id: false })], default: [] },
+    lastSyncAt: { type: Date, default: null }, lastError: { type: String, default: null },
   },
   { timestamps: true, versionKey: false },
 );
 connectionSchema.index({ keyHash: 1 }, { unique: true, partialFilterExpression: { keyHash: { $type: 'string' } } });
 connectionSchema.index({ prevKeyHash: 1 }, { sparse: true });
 connectionSchema.index({ accountId: 1, channel: 1 });
+connectionSchema.index({ channel: 1, 'sources.id': 1, status: 1 });
 export type ConnectionDoc = InferSchemaType<typeof connectionSchema> & { _id: string; createdAt: Date };
 export const Connection = model('CampaignConnection', connectionSchema, 'campaign_connections');
 

@@ -99,18 +99,20 @@ export async function submitTemplate(ctx: AuthContext, id: string, req: Request)
   if (!['DRAFT', 'REJECTED'].includes(t.status)) throw AppError.invalidState('template', t.status);
   await MessageTemplate.updateOne({ _id: id }, { $set: { status: 'PENDING_APPROVAL', makerId: ctx.userId, metaStatus: null, metaReason: null }, $inc: { version: 1 } });
   await audit({ entity: 'template', entityId: id, action: 'TEMPLATE_SUBMITTED' }, { req });
-  return tpl(id);
+  // No admin approval (Q92): email goes live now; WhatsApp goes to Meta now. A failed check (COM-05) returns it to DRAFT.
+  try { return await approveTemplate(ctx, id, req, { direct: true }); }
+  catch (e) { await MessageTemplate.updateOne({ _id: id, status: 'PENDING_APPROVAL' }, { $set: { status: 'DRAFT' } }); throw e; }
 }
 /** A different ADM approves with OTP (AC-P39-4). Email: ACTIVE. WhatsApp: sent to Meta (COM-01), ACTIVE only on Meta's approval. */
-export async function approveTemplate(ctx: AuthContext, id: string, req: Request) {
+export async function approveTemplate(ctx: AuthContext, id: string, req: Request, opts: { direct?: boolean } = {}) {
   const t = await tpl(id);
   if (t.status !== 'PENDING_APPROVAL' || t.metaStatus === 'SUBMITTED') throw AppError.invalidState('template', t.status);
-  if (t.makerId === ctx.userId) throw new AppError(403, 'FORBIDDEN', 'CAT-05');
+  if (t.makerId === ctx.userId && !opts.direct) throw new AppError(403, 'FORBIDDEN', 'CAT-05'); // only items left waiting from before
   if (await MessageTemplate.exists({ _id: { $ne: id }, purpose: t.purpose, channel: t.channel, language: t.language, status: 'ACTIVE' })) throw new AppError(409, 'INVALID_STATE', 'COM-05', { purpose: t.purpose.replace(/_/g, ' ').toLowerCase() });
   if (t.channel === 'EMAIL') {
     await MessageTemplate.updateOne({ _id: id }, { $set: { status: 'ACTIVE', approverId: ctx.userId } });
     await audit({ entity: 'template', entityId: id, action: 'TEMPLATE_APPROVED' }, { req });
-    return { template: await tpl(id), messageId: 'GEN-07' as const };
+    return { template: await tpl(id), messageId: (opts.direct ? 'CAT-42' : 'GEN-07') as 'CAT-42' | 'GEN-07', params: { Item: t.name } };
   }
   await provider().submitTemplate(t);
   await MessageTemplate.updateOne({ _id: id }, { $set: { metaStatus: 'SUBMITTED', approverId: ctx.userId } });

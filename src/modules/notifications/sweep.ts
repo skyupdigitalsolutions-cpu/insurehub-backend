@@ -47,6 +47,10 @@ export async function runSweep(now = clock.now()) {
   await (await import('../referrals/referrals.service.js')).refreshShownStatuses();
   // SYS-05 subscriptions (once a day) and SYS-14 support-grant expiry
   await (await import('../admin/admin.service.js')).maybeRunSubscriptionJob(now);
+  // Change #23: follow-up overdue (SYS-07 extension): open leads whose follow-up passed in the last day, once per due time
+  await followUpOverdue(now);
+  // Campaigns: Meta / LinkedIn catch-up every 15 minutes (leads a webhook missed)
+  await (await import('../campaigns/campaigns.service.js')).maybeCatchUp(now);
   return { reminders, removed, expired };
 }
 
@@ -56,3 +60,19 @@ export function startSweep() {
   timer.unref();
 }
 export function stopSweep() { if (timer) clearInterval(timer); }
+
+/** Change #23 FOLLOW_UP_OVERDUE: the advisor is told once per lead and follow-up time (dedupe), only for the last day's misses. */
+async function followUpOverdue(now: Date) {
+  const { Lead } = await import('../leads/lead.model.js');
+  const { User } = await import('../users/user.model.js');
+  const { notify } = await import('./notifications.service.js');
+  const leads = await Lead.find({ isOpen: true, nextFollowUpAt: { $lt: now, $gte: new Date(now.getTime() - 86_400_000) } }, { accountId: 1, name: 1, nextFollowUpAt: 1 }).limit(500).lean<Array<{ _id: string; accountId: string; name: string; nextFollowUpAt: Date }>>();
+  const advisors = new Map<string, string | null>();
+  for (const l of leads) {
+    if (!advisors.has(l.accountId)) advisors.set(l.accountId, (await User.findOne({ accountId: l.accountId, role: 'ADV' }, { _id: 1 }).lean<{ _id: string }>())?._id ?? null);
+    const adv = advisors.get(l.accountId);
+    if (!adv) continue;
+    const time = new Date(l.nextFollowUpAt.getTime() + 5.5 * 3_600_000).toISOString().slice(11, 16);
+    await notify({ userId: adv, accountId: l.accountId, kind: 'FOLLOW_UP_OVERDUE', messageId: 'DSH-26', params: { name: l.name, time }, dedupeKey: `DSH-26|${l._id}|${l.nextFollowUpAt.toISOString()}`, link: { type: 'LEAD', id: l._id } }).catch(() => undefined);
+  }
+}

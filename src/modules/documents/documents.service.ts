@@ -21,7 +21,7 @@ import { CustomerDocument, DocumentLabel, VEHICLE_TYPES, VERIFY_TYPES, type Docu
 import { readDocument, readerEnabled } from './reader.js';
 import { logger } from '../../lib/logger.js';
 
-export interface UploadBody { customerId?: string; personKey?: string; type?: string; name?: string | null; fileId: string }
+export interface UploadBody { customerId?: string; personKey?: string; type?: string; name?: string | null; fileId: string; saveAsType?: boolean }
 
 const isVerify = (t: string) => (VERIFY_TYPES as readonly string[]).includes(t);
 const isIdentity = (t: string) => t === 'Aadhaar' || t === 'PAN';
@@ -84,13 +84,15 @@ export async function upload(ctx: AuthContext, b: UploadBody, req: Request, vehi
   // GR-26: the document is saved first; reading runs afterwards in the background (startReading below).
   const reading = isVerify(type) && readerEnabled();
 
+  // Change #25: an "Other" name is linked to the account's saved type (saved now when asked).
+  const accountDocumentTypeId = !vehicle && type === 'Other' && b.name ? await (await import('./accountDocTypes.service.js')).resolve(ctx, b.name, !!b.saveAsType, req) : null;
   const seriesKey = vehicle ? `V:${vehicle.vehicleId}|${type}${vehicle.slot ? `|${vehicle.slot}` : ''}` : seriesKeyOf(b.personKey, type, b.name);
   for (let attempt = 0; ; attempt++) {
     const last = await CustomerDocument.findOne({ accountId: ctx.accountId, seriesKey }, { version: 1 }).sort({ version: -1 }).lean<{ version: number }>();
     const version = (last?.version ?? 0) + 1;
     try {
       const doc = await new CustomerDocument({
-        accountId: ctx.accountId, customerId: c._id, personKey: b.personKey, type, name: type === 'Other' ? b.name : null, seriesKey, version,
+        accountId: ctx.accountId, customerId: c._id, personKey: b.personKey, type, name: type === 'Other' ? b.name : null, seriesKey, version, accountDocumentTypeId,
         fileId: b.fileId, originalName: file!.name, label: file!.name, labelKey: nameKey(file!.name),
         status: isVerify(type) ? 'UNCONFIRMED' : 'CONFIRMED', readStatus: reading ? 'PENDING' : 'OFF', readStartedAt: reading ? clock.now() : null,
         vehicleId: vehicle?.vehicleId ?? null, slot: vehicle?.slot ?? null, uploadedBy: ctx.userId,

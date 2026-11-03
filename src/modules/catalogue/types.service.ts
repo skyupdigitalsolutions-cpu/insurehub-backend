@@ -148,8 +148,9 @@ export async function submit(ctx: AuthContext, id: string, b: { rev: number }, r
   const u = await TemplateVersion.findOneAndUpdate({ _id: id, status: 'DRAFT', rev: b.rev }, { $set: { status: 'PENDING_APPROVAL', submittedAt: clock.now(), makerId: ctx.userId }, $inc: { rev: 1 } }, { new: true }).lean<TemplateDoc>();
   if (!u) throw AppError.versionConflict('template', tplView(t, ctx));
   await audit({ entity: 'templateVersion', entityId: id, action: 'TEMPLATE_SUBMITTED' }, { req });
-  const type = await InsuranceType.findById(t.typeId, { name: 1 }).lean<{ name: string }>();
-  return { template: tplView(u, ctx), params: { Item: `${type?.name} template version ${u.number}` } };
+  // No admin approval (Q92): publish now through the approval step; a failure returns the version to DRAFT.
+  try { return await approve(ctx, id, { rev: u.rev }, req, { direct: true }); }
+  catch (e) { await TemplateVersion.updateOne({ _id: id, status: 'PENDING_APPROVAL' }, { $set: { status: 'DRAFT', rejectReason: (e as Error).message?.slice(0, 200) ?? null }, $inc: { rev: 1 } }); throw e; }
 }
 
 /**
@@ -157,18 +158,18 @@ export async function submit(ctx: AuthContext, id: string, b: { rev: number }, r
  * The first step claims the decision (conditional on PENDING and rev), so a second approver gets GEN-04.
  * Products keep their own version until their next edit (AC-P21-1).
  */
-export async function approve(ctx: AuthContext, id: string, b: { rev: number }, req: Request) {
+export async function approve(ctx: AuthContext, id: string, b: { rev: number }, req: Request, opts: { direct?: boolean } = {}) {
   const t = await TemplateVersion.findById(id).lean<TemplateDoc>();
   if (!t) throw AppError.notFound();
   if (t.status !== 'PENDING_APPROVAL') throw AppError.invalidState('template', t.status.replace('_', ' '));
-  if (t.makerId === ctx.userId) throw new AppError(403, 'FORBIDDEN', 'CAT-05');
+  if (t.makerId === ctx.userId && !opts.direct) throw new AppError(403, 'FORBIDDEN', 'CAT-05'); // only items left waiting from before
   const now = clock.now();
   const out = await withTx(async (session) => {
     const claimed = await TemplateVersion.findOneAndUpdate({ _id: id, status: 'PENDING_APPROVAL', rev: b.rev }, { $set: { approvedBy: ctx.userId, approvedAt: now }, $inc: { rev: 1 } }, { new: true, session: session ?? undefined }).lean<TemplateDoc>();
     if (!claimed) throw AppError.invalidState('template', 'already decided'); // GEN-04
     await TemplateVersion.updateMany({ typeId: t.typeId, status: 'ACTIVE' }, { $set: { status: 'RETIRED', isOpen: null } }, { session: session ?? undefined });
     const live = await TemplateVersion.findOneAndUpdate({ _id: id }, { $set: { status: 'ACTIVE', isOpen: null } }, { new: true, session: session ?? undefined }).lean<TemplateDoc>();
-    await audit({ entity: 'templateVersion', entityId: id, action: 'TEMPLATE_APPROVED', after: { typeId: t.typeId, number: t.number } }, { req, session });
+    await audit({ entity: 'templateVersion', entityId: id, action: opts.direct ? 'TEMPLATE_PUBLISHED' : 'TEMPLATE_APPROVED', after: { typeId: t.typeId, number: t.number } }, { req, session });
     return live!;
   });
   await useStepUp(req.stepUpId, 'CATALOGUE_APPROVED', null);

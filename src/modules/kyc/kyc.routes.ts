@@ -1,3 +1,4 @@
+import { requireStepUp } from '../auth/stepUp.js';
 import { Router } from 'express';
 import { z } from 'zod';
 import { authenticate } from '../../middleware/authenticate.js';
@@ -47,7 +48,8 @@ export function kycReviewRoutes() {
   r.use(authenticate, allow('kyc.review'));
   r.get('/', async (_req, res) => sendData(res, await kyc.reviewQueue()));
   r.get('/:accountId', validate({ params: accountParam }), async (req, res) => sendData(res, await kyc.reviewItem(String(req.params.accountId), req)));
-  r.post('/:accountId/decision', validate({ params: accountParam, body: decisionBody }, labels), idempotent(), async (req, res) => {
+  // Advisor KYC is still confirmed by an admin (client decision); Verify needs the step-up OTP (change analysis §9.1).
+  r.post('/:accountId/decision', (req, res, next) => (req.body?.decision === 'VERIFY' ? requireStepUp(req, res, next) : next()), validate({ params: accountParam, body: decisionBody }, labels), idempotent(), async (req, res) => {
     const out = await kyc.decide(req.auth!, String(req.params.accountId), req.body, req);
     sendDone(res, out, out.messageId as 'PRF-05' | 'PRF-06', out.messageId === 'PRF-06' ? { reason: req.body.reason === 'Other' ? req.body.note : req.body.reason } : {});
   });

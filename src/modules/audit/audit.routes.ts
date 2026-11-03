@@ -8,7 +8,7 @@ import { sendData } from '../../lib/response.js';
 import { User } from '../users/user.model.js';
 import { AuditLog } from './audit.model.js';
 import { requireStepUp } from '../auth/stepUp.js';
-import { audit } from './audit.service.js';
+import { audit, maskIp } from './audit.service.js';
 
 const query = z.object({
   ...pageQuery,
@@ -44,6 +44,7 @@ export function auditRoutes() {
     sendData(res, items.map((i) => ({
       id: String(i._id), at: i.at, accountId: i.accountId, actorUserId: i.actorUserId, actorName: i.actorUserId ? names.get(i.actorUserId) ?? null : i.actorLabel,
       actorRole: i.actorRole, entity: i.entity, entityId: i.entityId, entityRef: i.entityRef, action: i.action, result: i.result, requestId: i.requestId,
+      ip: maskIp(i.ip as string | null), device: (i as { device?: string | null }).device ?? null,
       ...(ctx.role === 'STF' ? {} : { before: i.before, after: i.after }),
     })), 200, pageMeta(q.page, limit, total));
   });

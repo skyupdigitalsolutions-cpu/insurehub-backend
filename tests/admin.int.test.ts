@@ -88,21 +88,20 @@ describe('P-47 plans and billing', () => {
 });
 
 describe('P-49 configuration', () => {
-  it('AC-P49-1 no effect until a second ADM approves (ADM-04, ADM-06); the maker cannot approve; AC-P49-2 Release settings refused; AC-P49-3 out of range (ADM-05)', async () => {
+  it('no admin approval: a change applies at once with a reason and the OTP (ADM-06) and keeps its history; AC-P49-2 Release settings refused; AC-P49-3 out of range (ADM-05)', async () => {
     const a1 = await seedAdmin();
-    const a2 = await secondAdmin();
     const A1 = as(a1.token);
-    expect(err(await A1.post('/admin/config/CFG-01/changes', { value: 4, reason: 'Shorter OTP' }))).toMatchObject({ status: 409 }); // Release
-    const bad = await A1.post('/admin/config/CFG-114/changes', { value: 99, reason: 'More exports' });
+    const otp = async () => ({ 'X-Step-Up-Token': await stepUp(a1.token, a1.mobile) });
+    expect(err(await A1.post('/admin/config/CFG-01/changes', { value: 4, reason: 'Shorter OTP' }, await otp()))).toMatchObject({ status: 409 }); // Release
+    const bad = await A1.post('/admin/config/CFG-114/changes', { value: 99, reason: 'More exports' }, await otp());
     expect(bad.body.error.fields[0].message).toBe('Enter a value from 1 to 20.');
-    const req1 = await A1.post('/admin/config/CFG-114/changes', { value: 5, reason: 'Advisors asked for more exports' });
-    expect(req1.body.meta.message).toBe('Change sent for approval.');
-    expect(cfgNum('CFG-114')).toBe(3); // no effect yet
-    expect(err(await A1.post(`/admin/config/changes/${req1.body.data._id}/approve`, {}, { 'X-Step-Up-Token': await stepUp(a1.token, a1.mobile) }))).toMatchObject({ messageId: 'CAT-05' });
-    const ok = await as(a2.token).post(`/admin/config/changes/${req1.body.data._id}/approve`, {}, { 'X-Step-Up-Token': await stepUp(a2.token, a2.mobile) });
+    expect(err(await A1.post('/admin/config/CFG-114/changes', { value: 5, reason: 'Advisors asked for more exports' }))).toMatchObject({ status: 403, messageId: 'AUTH-26' });
+    expect(cfgNum('CFG-114')).toBe(3);
+    const ok = await A1.post('/admin/config/CFG-114/changes', { value: 5, reason: 'Advisors asked for more exports' }, await otp());
     expect(ok.body.meta.message).toBe('Change applied. The new value is used from now on.');
-    expect(cfgNum('CFG-114')).toBe(5);
-    const listChange = await A1.post('/admin/config/CFG-60/changes', { value: [45, 15, 3], reason: 'Fewer reminders' }); // a list of numbers is valid
+    expect(ok.body.data).toMatchObject({ status: 'APPLIED', oldValue: 3, newValue: 5, reason: 'Advisors asked for more exports' });
+    expect(cfgNum('CFG-114')).toBe(5); // live at once
+    const listChange = await A1.post('/admin/config/CFG-60/changes', { value: [45, 15, 3], reason: 'Fewer reminders' }, await otp()); // a list of numbers is valid
     expect(listChange.status).toBe(201);
   });
 });

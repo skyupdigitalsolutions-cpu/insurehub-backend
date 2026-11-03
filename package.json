@@ -18,7 +18,10 @@
     "db:indexes": "tsx --env-file=.env src/scripts/sync-indexes.ts",
     "storage:check": "tsx --env-file=.env src/scripts/storage-check.ts",
     "ocr:check": "tsx --env-file=.env src/scripts/ocr-check.ts",
-    "db:migrate:lead-sources": "tsx --env-file=.env src/scripts/migrate-lead-source-codes.ts"
+    "db:migrate:lead-sources": "tsx --env-file=.env src/scripts/migrate-lead-source-codes.ts",
+    "db:migrate:stage-b": "tsx --env-file=.env src/scripts/migrate-stage-b.ts",
+    "db:migrate:life-term": "tsx --env-file=.env src/scripts/migrate-life-term.ts",
+    "db:migrate:pending-approvals": "tsx --env-file=.env src/scripts/migrate-pending-approvals.ts"
   },
   "dependencies": {
     "@google-cloud/documentai": "10.2.0",

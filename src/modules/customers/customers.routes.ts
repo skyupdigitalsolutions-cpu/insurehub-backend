@@ -5,7 +5,7 @@ import { idempotent } from '../../middleware/idempotency.js';
 import { validate } from '../../middleware/validate.js';
 import { sendData, sendDone } from '../../lib/response.js';
 import { AppError } from '../../lib/errors.js';
-import { getConsents, recordConsent } from './consent.service.js';
+import { getConsents, recordConsent, recordConsents } from './consent.service.js';
 import {
   consentBody, createCustomerBody, customerIdParam, duplicateQuery, familyBody, familyUpdateBody, identityBody, labels, listCustomersQuery,
   memberParams, revealBody, statusBody, updateCustomerBody, versionBody,
@@ -68,7 +68,7 @@ export function customerRoutes() {
   r.get('/:id/consents', validate({ params: customerIdParam }), async (req, res) => sendData(res, await getConsents(req.auth!, p(req).id)));
   r.post('/:id/consents', validate({ params: customerIdParam, body: consentBody }, labels), idempotent(), async (req, res) => {
     if (req.body.action === 'GIVE' && req.auth!.readOnly) throw new AppError(403, 'READ_ONLY', 'SUB-03');
-    const out = await recordConsent(req.auth!, p(req).id, req.body, req);
+    const out = req.body.channels ? await recordConsents(req.auth!, p(req).id, req.body, req) : await recordConsent(req.auth!, p(req).id, req.body, req);
     sendDone(res, await getConsents(req.auth!, p(req).id), out.messageId, out.params);
   });
   return r;

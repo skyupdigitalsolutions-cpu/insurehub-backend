@@ -4,7 +4,7 @@ import { authenticate } from '../../middleware/authenticate.js';
 import { allow, writable } from '../../middleware/authorize.js';
 import { idempotent } from '../../middleware/idempotency.js';
 import { validate } from '../../middleware/validate.js';
-import { requireStepUp } from '../auth/stepUp.js';
+import { optionalStepUp, requireStepUp } from '../auth/stepUp.js';
 import { bareDomain, code, confirmations, date, email, enumOf, notes, optional, percent, phone, recordId, required, rupees, shortText, uin, version, webAddress, wholeNumber } from '../../lib/fields.js';
 import { cfgNum } from '../../config/cfg.js';
 import { sendData, sendDone } from '../../lib/response.js';
@@ -46,15 +46,15 @@ export function catalogueInsurerRoutes() {
   r.get('/', validate({ query: z.object({ q: z.string().max(100).optional(), status: z.string().max(30).optional() }) }), async (req, res) =>
     sendData(res, await ins.list(req.query.q ? String(req.query.q) : undefined, req.query.status ? String(req.query.status) : undefined)));
   r.get('/:id', validate({ params: idParam }), async (req, res) => sendData(res, await ins.get(req.auth!, String(req.params.id))));
-  r.post('/', validate({ body: createBody }, labels), idempotent(), async (req, res) => {
+  r.post('/', optionalStepUp, validate({ body: createBody }, labels), idempotent(), async (req, res) => {
     const out = await ins.create(req.auth!, req.body, req);
     sendDone(res, out.insurer, out.messageId, out.params, 201);
   });
-  r.patch('/:id', validate({ params: idParam, body: editBody }, labels), async (req, res) => {
+  r.patch('/:id', optionalStepUp, validate({ params: idParam, body: editBody }, labels), async (req, res) => {
     const out = await ins.edit(req.auth!, String(req.params.id), req.body, req);
     sendDone(res, out.insurer, out.messageId, out.params);
   });
-  r.post('/:id/submit', validate({ params: idParam, body: versionBody }, labels), async (req, res) => {
+  r.post('/:id/submit', optionalStepUp, validate({ params: idParam, body: versionBody }, labels), async (req, res) => {
     const out = await ins.submit(req.auth!, String(req.params.id), req.body, req);
     sendDone(res, out.insurer, out.messageId, out.params);
   });
@@ -126,9 +126,9 @@ export function templateRoutes() {
   r.get('/:id', validate({ params: tplId }), async (req, res) => sendData(res, await types.getTemplate(req.auth!, String(req.params.id))));
   r.put('/:id', validate({ params: tplId, body: templateBody }, tplLabels), async (req, res) =>
     sendDone(res, await types.saveDraft(req.auth!, String(req.params.id), req.body, req), 'GEN-08', { 'Record type': 'Template' }));
-  r.post('/:id/submit', validate({ params: tplId, body: revBody }, tplLabels), async (req, res) => {
+  r.post('/:id/submit', requireStepUp, validate({ params: tplId, body: revBody }, tplLabels), async (req, res) => {
     const out = await types.submit(req.auth!, String(req.params.id), req.body, req);
-    sendDone(res, out.template, 'CAT-02', out.params);
+    sendDone(res, out.template, 'CAT-42', out.params); // published at once (no admin approval)
   });
   r.post('/:id/approve', allow('catalogue.approve'), requireStepUp, validate({ params: tplId, body: revBody }, tplLabels), async (req, res) => {
     const out = await types.approve(req.auth!, String(req.params.id), req.body, req);
@@ -193,9 +193,9 @@ export function productVersionRoutes() {
     sendDone(res, await products.adminSaveDraft(req.auth!, String(req.params.id), req.body, req), 'GEN-08', { 'Record type': 'Product version' }));
   r.post('/:id/use-current-template', validate({ params: pvId, body: z.object({ rev: required(version()) }).strict() }, prodLabels), async (req, res) =>
     sendDone(res, await products.adminUseCurrentTemplate(req.auth!, String(req.params.id), req.body, req), 'GEN-08', { 'Record type': 'Product version' }));
-  r.post('/:id/submit', validate({ params: pvId, body: z.object({ rev: required(version()) }).strict() }, prodLabels), async (req, res) => {
+  r.post('/:id/submit', requireStepUp, validate({ params: pvId, body: z.object({ rev: required(version()) }).strict() }, prodLabels), async (req, res) => {
     const out = await products.adminSubmit(req.auth!, String(req.params.id), req.body, req);
-    sendDone(res, out.version, 'CAT-02', out.params);
+    sendDone(res, out.version, 'CAT-42', out.params); // "Publish to all advisors": live at once (no admin approval)
   });
   r.post('/:id/approve', allow('catalogue.approve'), requireStepUp, validate({ params: pvId, body: z.object({ rev: required(version()) }).strict() }, prodLabels), async (req, res) => {
     const out = await products.adminApprove(req.auth!, String(req.params.id), req.body, req);
@@ -306,7 +306,7 @@ export function correctionRoutes() {
   r.use(authenticate, allow('catalogue.make'));
   const id = z.object({ id: z.string().regex(/^cor_[a-f0-9]{28}$/) });
   r.get('/', async (_req, res) => sendData(res, await corrections.queue()));
-  r.post('/:id/accept', validate({ params: id }), async (req, res) => sendData(res, await corrections.accept(req.auth!, String(req.params.id), req)));
+  r.post('/:id/accept', optionalStepUp, validate({ params: id }), async (req, res) => sendData(res, await corrections.accept(req.auth!, String(req.params.id), req)));
   r.post('/:id/reject', validate({ params: id, body: z.object({ reason: required(shortText()) }).strict() }, { reason: 'Reason' }), async (req, res) =>
     sendData(res, await corrections.reject(req.auth!, String(req.params.id), req.body.reason, req)));
   return r;

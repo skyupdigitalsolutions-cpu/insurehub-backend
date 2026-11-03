@@ -1,3 +1,4 @@
+import { assertStepUp } from '../auth/stepUp.js';
 import type { Request } from 'express';
 import { Schema, model, type InferSchemaType } from 'mongoose';
 import { clock } from '../../lib/clock.js';
@@ -114,6 +115,7 @@ export async function queue() {
  */
 export async function accept(ctx: AuthContext, id: string, req: Request) {
   const c = await Correction.findById(id).lean<CorrectionDoc>();
+  if (c && !(await ProductVersion.exists({ productId: c.productId, isOpen: true }))) assertStepUp(req); // it will be published now
   if (!c) throw AppError.notFound();
   if (c.status !== 'SUBMITTED') throw AppError.invalidState('correction', c.status);
   const { p, v: pub } = await published(c.productId);
@@ -139,8 +141,16 @@ export async function accept(ctx: AuthContext, id: string, req: Request) {
     await audit({ entity: 'correction', entityId: id, action: 'CORRECTION_ACCEPTED', after: { productId: c.productId, versionId: draft._id, field: c.field } }, { req, session });
     return draft;
   });
-  await notify({ userId: c.userId, accountId: c.accountId, kind: 'CORRECTION_ACCEPTED', messageId: 'CAT-39', params: { product: p.name ?? p.code }, dedupeKey: `CAT-39|${id}` });
-  return { correction: view((await Correction.findById(id).lean<CorrectionDoc>())!), draftVersionId: out._id };
+  // "Accept and publish" (no admin approval, Q92): a draft made just for this correction goes live now. A draft that was
+  // already open may hold someone's unfinished edits, so the value waits there and goes live when that draft is published.
+  let live = false;
+  if (!openV) {
+    const draft = (await ProductVersion.findById(out._id, { rev: 1 }).lean<{ rev: number }>())!;
+    await (await import('./products.service.js')).adminSubmit(ctx, out._id as string, { rev: draft.rev }, req);
+    live = true;
+  }
+  await notify({ userId: c.userId, accountId: c.accountId, kind: 'CORRECTION_ACCEPTED', messageId: live ? 'CAT-44' : 'CAT-39', params: { product: p.name ?? p.code }, dedupeKey: `CAT-39|${id}` });
+  return { correction: view((await Correction.findById(id).lean<CorrectionDoc>())!), draftVersionId: out._id, published: live };
 }
 
 /** Reject with a reason (STF or ADM): the advisor is told CAT-40. */

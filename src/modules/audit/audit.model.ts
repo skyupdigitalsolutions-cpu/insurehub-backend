@@ -21,6 +21,7 @@ const auditSchema = new Schema(
     result: { type: String, enum: ['SUCCESS', 'FAILED', 'REFUSED'], default: 'SUCCESS' },
     requestId: { type: String, default: null },
     ip: { type: String, default: null },
+    device: { type: String, default: null }, // change #58: a short user-agent summary ("Chrome on Windows", "Bimayantra app on Android")
     stepUpId: { type: String, default: null }, // the OTP verification behind a sensitive action (P-48)
   },
   { versionKey: false },

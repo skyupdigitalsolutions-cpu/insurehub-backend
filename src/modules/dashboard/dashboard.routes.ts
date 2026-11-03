@@ -15,9 +15,15 @@ export function dashboardRoutes() {
   const w = (fn: (ctx: NonNullable<Express.Request['auth']>) => Promise<unknown>): RequestHandler => async (req, res) => sendData(res, await fn(req.auth!));
   r.get('/open-leads', w(d.openLeads));
   r.get('/active-customers', w(d.activeCustomers));
-  r.get('/open-quotations', w(d.notYet('QUOTATIONS', 10)));
-  r.get('/policies-in-force', w(d.notYet('POLICIES', 12)));
-  r.get('/renewals-due', w(d.notYet('RENEWALS', 13)));
+  r.get('/open-quotations', w(d.openQuotations));
+  r.get('/policies-in-force', w(d.policiesInForce));
+  r.get('/renewals-due', w(d.renewalsDue));
+  // Change #22: the new widgets
+  r.get('/lead-status-counts', w(d.leadStatusCounts));
+  r.get('/follow-ups', w(d.followUps));
+  r.get('/lead-sources', w(d.leadSources));
+  r.get('/catalogue-summary', w(d.catalogueSummary));
+  r.get('/ad-leads-today', w(d.adLeadsToday));
   r.get('/funnel', validate({ query: z.object({ period: enumOf(['THIS_MONTH', 'LAST_3_MONTHS', 'THIS_YEAR'] as const).default('THIS_MONTH') }) }),
     async (req, res) => sendData(res, await d.funnel(req.auth!, (req.query.period as d.Period) ?? 'THIS_MONTH')));
   r.get('/todays-tasks', w(d.todaysTasks));
