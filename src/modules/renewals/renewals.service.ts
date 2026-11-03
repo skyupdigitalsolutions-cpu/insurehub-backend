@@ -235,21 +235,72 @@ export async function premiumPaid(ctx: AuthContext, id: string, b: { version: nu
  * Create renewal quotation (REN-02): a normal P-27 quotation for the same customer, product, people and sum insured,
  * marked "Renewal of {policy number}" (allowed even if the product is now WITHDRAWN); the cycle → IN_FOLLOW_UP.
  */
-export async function renewalQuotation(ctx: AuthContext, id: string, req: Request) {
+export type RenewalMode = 'SAME_POLICY' | 'NEW_QUOTATION' | 'COMPARISON';
+export interface RenewalBody {
+  mode?: RenewalMode;
+  /** SAME_POLICY: the premium on the insurer's renewal notice, and the notice itself (optional, Q-default). */
+  typedRenewalPremium?: number | null; renewalNoticeFileId?: string | null;
+  /** NEW_QUOTATION: what changes; portability only with a different insurer (QT-50). */
+  insurerId?: string | null; productId?: string | null; variantId?: string | null; people?: string[]; sumInsured?: number | null; portabilityRequested?: boolean;
+}
+
+/**
+ * Changes #14–#16: how to renew. SAME_POLICY (the earlier single action, still the default) opens P-27 with the same
+ * customer, product, people and sum insured, plus the renewal notice's premium when typed. NEW_QUOTATION opens P-27 with
+ * the insurer, product, variant, people or sum insured changed, and an optional portability request. COMPARISON opens
+ * P-30 with the same people and sum insured. All three link to the cycle (IN_FOLLOW_UP) and keep last year's premium for
+ * "last year vs this year". When the new policy is recorded, the old one becomes RENEWED as before, even with a new
+ * insurer (Q-default).
+ */
+export async function renewalQuotation(ctx: AuthContext, id: string, req: Request, b: RenewalBody = {}) {
   const c = await load(ctx, id);
   if (!['DUE', 'IN_FOLLOW_UP', 'LAPSED', 'UPCOMING'].includes(c.status)) throw AppError.invalidState('renewal', c.status);
   const pol = await Policy.findById(c.policyId).lean<PolicyDoc>();
-  if (!pol?.productId) throw AppError.invalidState('policy', 'not linked to a catalogue product');
+  const mode = b.mode ?? 'SAME_POLICY';
+  if (mode === 'SAME_POLICY' && !pol?.productId) throw AppError.invalidState('policy', 'not linked to a catalogue product');
+  if (!pol) throw AppError.notFound();
+  const people = b.people?.length ? b.people : (pol.insured as Array<{ key: string | null }>).map((x) => x.key).filter(Boolean) as string[];
+  const startDate = c.dueDate > istToday() ? c.dueDate : istToday();
+  const sumInsured = b.sumInsured ?? pol.sumInsured ?? undefined;
+  const cycleSet = (extra: Record<string, unknown>) => RenewalCycle.updateOne({ _id: id }, { $set: { renewalMode: mode, ...extra, ...(c.status === 'DUE' || c.status === 'UPCOMING' ? { status: 'IN_FOLLOW_UP' } : {}) }, $inc: { version: 1 } });
+
+  if (mode === 'COMPARISON') {
+    const cmp = await import('../quotations/comparisons.service.js');
+    const started = await cmp.start(ctx, pol.customerId, req);
+    const saved = await cmp.saveDraft(ctx, started.id, { version: started.version, inputs: { typeId: pol.typeId ?? undefined, people, sumInsured, policyTerm: 1, startDate, renewalOf: pol._id } as never, options: [] });
+    await cycleSet({ renewalComparisonId: started.id });
+    await audit({ entity: 'renewal', entityId: id, action: 'RENEWAL_COMPARISON_STARTED', after: { comparisonId: started.id } }, { req });
+    return { quotation: null, comparison: saved, params: { 'policy number': pol.policyNumber ?? '' } };
+  }
+
+  const insurerId = (mode === 'NEW_QUOTATION' ? b.insurerId : null) ?? pol.insurerId ?? undefined;
+  const productId = (mode === 'NEW_QUOTATION' ? b.productId : null) ?? pol.productId ?? undefined;
+  const portability = mode === 'NEW_QUOTATION' && !!b.portabilityRequested;
+  if (portability && insurerId === pol.insurerId) throw AppError.field('portabilityRequested', 'QT-50');
+  if (b.renewalNoticeFileId) await (await import('../files/files.service.js')).assertOwnFile(ctx, b.renewalNoticeFileId, 'CUSTOMER_DOCUMENT', 'renewalNoticeFileId');
   const q = await import('../quotations/quotations.service.js');
   const start = await q.start(ctx, pol.customerId, req);
-  const people = (pol.insured as Array<{ key: string | null }>).map((x) => x.key).filter(Boolean) as string[];
-  const startDate = c.dueDate > istToday() ? c.dueDate : istToday();
+  // The notice's premium: the typed base for a rate-table product, the net premium for manual entry
+  const typed = mode === 'SAME_POLICY' ? b.typedRenewalPremium ?? null : null;
+  let typedInput = {};
+  if (typed) {
+    const { Product, ProductVersion } = await import('../catalogue/product.model.js');
+    const prod = await Product.findById(productId, { publishedVersionId: 1 }).lean<{ publishedVersionId: string | null }>();
+    const mode_ = (await ProductVersion.findById(prod?.publishedVersionId, { 'data.pricingMode': 1 }).lean<{ data?: { pricingMode?: string } }>())?.data?.pricingMode;
+    typedInput = mode_ === 'RATE_TABLE' ? { typedBasePremium: typed } : { manual: { netPremium: typed } };
+  }
+  const inputs = {
+    typeId: pol.typeId ?? undefined, insurerId, productId, variantId: (mode === 'NEW_QUOTATION' ? b.variantId : null) ?? pol.variantId ?? undefined, people, sumInsured, policyTerm: 1, startDate, renewalOf: pol._id,
+    ...typedInput,
+  };
+  const renewal = { mode, previousPremium: pol.premium ?? null, noticeFileId: b.renewalNoticeFileId ?? null, portabilityRequested: portability, fromPolicyId: pol._id, fromInsurerId: pol.insurerId ?? null };
+  await (await import('../quotations/quotation.model.js')).Quotation.updateOne({ _id: start.id }, { $set: { renewal } });
   let saved;
-  try { saved = await q.save(ctx, start.id, { version: start.version, step: 8, inputs: { typeId: pol.typeId ?? undefined, insurerId: pol.insurerId ?? undefined, productId: pol.productId, people, sumInsured: pol.sumInsured ?? undefined, policyTerm: 1, startDate, renewalOf: pol._id } as never }, req); }
+  try { saved = await q.save(ctx, start.id, { version: start.version, step: 8, inputs: inputs as never }, req); }
   catch { saved = await q.get(ctx, start.id); } // the draft keeps its inputs; P-27 shows what to fix
-  await RenewalCycle.updateOne({ _id: id }, { $set: { renewalQuotationId: start.id, ...(c.status === 'DUE' || c.status === 'UPCOMING' ? { status: 'IN_FOLLOW_UP' } : {}) }, $inc: { version: 1 } });
-  await audit({ entity: 'renewal', entityId: id, action: 'RENEWAL_QUOTATION_STARTED', after: { quotationId: start.id } }, { req });
-  return { quotation: saved, params: { 'policy number': pol.policyNumber ?? '' } };
+  await cycleSet({ renewalQuotationId: start.id });
+  await audit({ entity: 'renewal', entityId: id, action: 'RENEWAL_QUOTATION_STARTED', after: { quotationId: start.id, mode, portability } }, { req });
+  return { quotation: saved, comparison: null, params: { 'policy number': pol.policyNumber ?? '' } };
 }
 
 /** P-33 on a renewal quotation: the old cycle and policy become RENEWED (AC-P38-2: the new policy has exactly one cycle). */

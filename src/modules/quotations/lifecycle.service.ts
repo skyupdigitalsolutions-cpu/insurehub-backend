@@ -1,4 +1,5 @@
 import type { Request } from 'express';
+import { flagOn } from '../flags/flags.js';
 import { randomBytes } from 'node:crypto';
 import { cfgBool, cfgNum } from '../../config/cfg.js';
 import { clock, istToday } from '../../lib/clock.js';
@@ -155,6 +156,8 @@ export async function outcome(ctx: AuthContext, id: string, b: { version: number
   if (to !== 'ACCEPTED' && !b.reason?.trim()) throw AppError.field('reason', 'GEN-01', { 'Field label': 'Reason' }); // AC-P29-4
   if (q.version !== b.version) throw AppError.versionConflict('quotation', quotationView(q));
   if (to === 'CANCELLED' && (await (await import('../payments/payments.service.js')).paidFor(id))) throw AppError.invalidState('quotation', 'PAID'); // AC-P29-2
+  // Change #11 (Q2): with the account switch on, Mark accepted needs a PAID payment first (QT-45)
+  if (to === 'ACCEPTED' && flagOn('quotation_accept_requires_payment', ctx.accountId) && !(await (await import('../payments/payments.service.js')).paidFor(id))) throw new AppError(409, 'INVALID_STATE', 'QT-45');
   const u = await setCurrent(q, { status: to, reason: b.reason ?? null }, to);
   if (to === 'CANCELLED') await (await import('../payments/payments.service.js')).cancelAwaiting(id, [rev.revision]);
   await audit({ entity: 'quotation', entityId: id, action: `QUOTATION_${to}`, after: { revision: rev.revision, reason: b.reason ?? null } }, { req });

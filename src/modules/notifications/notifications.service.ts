@@ -37,9 +37,27 @@ export async function unreadCount(ctx: AuthContext) {
   return { unread, shown: shown(unread) };
 }
 
-/** The bell list: the user's own items, newest first (P-10 step 2). */
-export async function list(ctx: AuthContext, opts: { before?: Date; limit: number }) {
-  const rows = await Notification.find({ userId: ctx.userId, ...(opts.before ? { createdAt: { $lt: opts.before } } : {}) })
+/**
+ * Filters on the notifications page (change #60 for SkyUp; the advisor tabs of §5.2 use the same mechanism).
+ * Each filter is a list of event kinds; UNREAD is the read state, ALL is everything.
+ */
+export const NOTIFICATION_FILTERS = {
+  KYC: ['KYC_WAITING', 'KYC_VERIFIED', 'KYC_REJECTED'],
+  CORRECTIONS: ['CORRECTION_SUBMITTED', 'CORRECTION_ACCEPTED', 'CORRECTION_REJECTED'],
+  ACCOUNTS: ['AGENT_CODE_FLAGGED', 'TRIALS_ENDING', 'SUBSCRIPTION', 'PLAN_CHANGED', 'AGENT_CODE_QUESTION', 'AGENT_CODE_REMOVED', 'SUPPORT_SESSION'],
+  TEMPLATES: ['TEMPLATE_REJECTED_BY_META', 'MESSAGE_TEMPLATE', 'TEMPLATE'],
+  LEADS: ['AD_LEAD_ARRIVED', 'LEAD_FOLLOW_UP', 'FOLLOW_UP_OVERDUE', 'REFERRAL', 'REFERRAL_STATUS'],
+  RENEWALS: ['RENEWAL_DUE', 'RENEWAL_LAPSED', 'POLICY'],
+  PAYMENTS: ['WALLET', 'SUBSCRIPTION', 'QUOTATION_EXPIRED'],
+  CATALOGUE: ['CATALOGUE_PRODUCT_PUBLISHED', 'CORRECTION_ACCEPTED', 'CORRECTION_REJECTED', 'OCR_DONE', 'OCR_FAILED'],
+} as const;
+export type NotificationFilter = 'ALL' | 'UNREAD' | keyof typeof NOTIFICATION_FILTERS;
+
+/** The bell list: the user's own items, newest first (P-10 step 2), optionally filtered (change #60). */
+export async function list(ctx: AuthContext, opts: { before?: Date; limit: number; filter?: NotificationFilter }) {
+  const f = opts.filter ?? 'ALL';
+  const byFilter = f === 'UNREAD' ? { readAt: null } : f === 'ALL' ? {} : { kind: { $in: [...NOTIFICATION_FILTERS[f]] } };
+  const rows = await Notification.find({ userId: ctx.userId, ...byFilter, ...(opts.before ? { createdAt: { $lt: opts.before } } : {}) })
     .sort({ createdAt: -1 }).limit(opts.limit + 1).lean<NotificationDoc[]>();
   const items = rows.slice(0, opts.limit).map((r) => ({
     id: r._id, messageId: r.messageId, message: r.message, createdAt: r.createdAt, read: !!r.readAt,
@@ -55,7 +73,7 @@ async function linkVisible(ctx: AuthContext, type: string, id: string): Promise<
     case 'LEAD': return !!(await Lead.exists({ _id: id, accountId: ctx.accountId }));
     case 'CUSTOMER': return !!(await Customer.exists({ _id: id, accountId: ctx.accountId }));
     case 'PROFILE': return id === ctx.accountId;
-    case 'KYC_REVIEW': return ctx.role === 'STF' || ctx.role === 'ADM';
+    case 'KYC_REVIEW': case 'CORRECTION': case 'MESSAGE_TEMPLATE': case 'AGENT_CODE_FLAG': case 'ACCOUNT': return ctx.role === 'STF' || ctx.role === 'ADM';
     case 'RENEWAL': { const { RenewalCycle } = await import('../renewals/renewal.model.js'); return !!(await RenewalCycle.exists({ _id: id, accountId: ctx.accountId })); }
     case 'PRODUCT': { const { Product } = await import('../catalogue/product.model.js'); return !!(await Product.exists({ _id: id, $or: [{ kind: 'VERIFIED' }, { kind: 'OWN', accountId: ctx.accountId }] })); }
     case 'CAMPAIGN': { const { Connection } = await import('../campaigns/campaign.model.js'); return !!(await Connection.exists({ _id: id, accountId: ctx.accountId })); }
@@ -71,6 +89,14 @@ export async function open(ctx: AuthContext, id: string) {
   if (!n.linkType || !n.linkId) return { link: null, ...(await unreadCount(ctx)) };
   if (!(await linkVisible(ctx, n.linkType, n.linkId))) throw AppError.notFound(); // read, but nothing revealed
   return { link: { type: n.linkType, id: n.linkId }, ...(await unreadCount(ctx)) };
+}
+
+/** Every active SkyUp Staff and Admin is told once per event (change analysis §9.6, SN-01). */
+export async function notifySkyUp(n: Omit<NotifyInput, 'userId' | 'accountId'>, session: ClientSession | null = null) {
+  const { User } = await import('../users/user.model.js');
+  const people = await User.find({ role: { $in: ['STF', 'ADM'] }, status: 'ACTIVE' }, { _id: 1 }).session(session).lean<Array<{ _id: string }>>();
+  for (const p of people) await notify({ ...n, userId: p._id, accountId: null }, session);
+  return people.length;
 }
 
 export async function readAll(ctx: AuthContext) {

@@ -14,6 +14,15 @@ const labels = {
   policyTerm: 'Policy term', startDate: 'Planned start date', riders: 'Riders', override: 'Price override', discount: 'Discount', manual: 'Premium', version: 'Version', step: 'Step',
 };
 const id = z.object({ id: z.string().regex(/^qt_[a-f0-9]{28}$/) });
+/** Change #12 (Q5 default): preset discount types are labels; the reference is still required (QT-37). */
+export const DISCOUNT_PRESETS = ['LONG_TERM', 'FAMILY', 'OTHER'] as const;
+/** Stage G inputs shared with comparison options (changes #2, #8, #9). */
+export const pricingExtras = {
+  variantId: z.string().regex(/^var_[a-f0-9]{28}$/).nullable().optional(),
+  typedBasePremium: rupees().nullable().optional(),
+  riderPrices: z.record(z.string().max(200), rupees({ allowZero: true })).optional(),
+  customAddOns: z.array(z.object({ name: required(shortText()), price: required(rupees({ allowZero: true })) }).strict()).max(50).optional(),
+};
 const inputs = z.object({
   typeId: z.string().regex(/^typ_[a-f0-9]{28}$/).optional(), insurerId: z.string().regex(/^ins_[a-f0-9]{28}$/).optional(), productId: z.string().regex(/^prd_[a-f0-9]{28}$/).optional(),
   people: z.array(z.string().regex(/^[CF]:(cus|fam)_[a-f0-9]{28}$/)).max(20).optional(),
@@ -21,10 +30,13 @@ const inputs = z.object({
   answers: z.record(z.string().max(60), z.union([z.string().max(200), z.number(), z.boolean()])).optional(),
   riders: z.array(z.string().max(200)).max(50).optional(),
   override: z.object({ amount: required(rupees()), reason: z.string().max(200).default('') }).strict().nullable().optional(),
-  discount: z.object({ kind: required(enumOf(['AMOUNT', 'PERCENT'] as const)), value: z.number().min(0).max(10_000_000), reference: z.string().max(200).default('') }).strict().nullable().optional(),
+  discount: z.object({ kind: required(enumOf(['AMOUNT', 'PERCENT'] as const)), value: z.number().min(0).max(10_000_000), reference: z.string().max(200).default(''), preset: optional(enumOf(DISCOUNT_PRESETS)) }).strict().nullable().optional(),
   manual: z.object({ netPremium: rupees().optional(), taxAmount: rupees({ allowZero: true }).optional() }).strict().nullable().optional(),
   paymentLink: optional(shortText()),
   renewalOf: z.string().regex(/^pol_[a-f0-9]{28}$/).nullable().optional(),
+  ...pricingExtras,
+  // Change #10: additional benefits (information only)
+  benefits: z.array(z.object({ name: required(shortText()), description: optional(shortText()), cost: optional(rupees({ allowZero: true })), showOnPdf: z.boolean().default(true) }).strict()).max(20).optional(),
 }).strict();
 
 /** Quotations (P-27). */

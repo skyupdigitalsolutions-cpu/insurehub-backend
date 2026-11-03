@@ -15,7 +15,8 @@ import { Customer, FamilyMember } from '../customers/customer.model.js';
 import { CustomerDocument } from '../documents/document.model.js';
 import { open as openFile, upload as storeFile } from '../files/files.service.js';
 import { Lead } from '../leads/lead.model.js';
-import { notify } from '../notifications/notifications.service.js';
+import { notify, notifySkyUp } from '../notifications/notifications.service.js';
+import { useStepUp } from '../auth/stepUp.js';
 import { Payment } from '../payments/payment.model.js';
 import { Policy } from '../policies/policy.model.js';
 import { Quotation } from '../quotations/quotation.model.js';
@@ -24,7 +25,7 @@ import { ReferralCode } from '../referrals/referral.model.js';
 import { JobRun, RenewalCycle } from '../renewals/renewal.model.js';
 import { User } from '../users/user.model.js';
 import { WebhookEvent } from '../comms/outbox.model.js';
-import { ConfigChange, ExportJob, InvoiceCounter, SubscriptionOrder, SupportGrant, type GrantDoc, type OrderDoc } from './admin.model.js';
+import { ConfigChange, ExportJob, InvoiceCounter, PlanChange, SubscriptionOrder, SupportGrant, type GrantDoc, type OrderDoc } from './admin.model.js';
 
 type Plan = 'NORMAL' | 'PREMIUM';
 type Cycle = 'MONTHLY' | 'YEARLY';
@@ -180,11 +181,7 @@ export async function runSubscriptionJob(now = clock.now()) {
       if ((cfg('CFG-178') as unknown as number[]).includes(left)) { await notify({ userId: adv._id, accountId: a._id, kind: 'SUBSCRIPTION', messageId: 'SUB-11', params: { date: dmy(end) }, dedupeKey: `SUB-11|${a._id}|${left}` }).catch(() => undefined); out.reminders++; }
     }
     if (s.nextPlan === 'NORMAL' && s.status === 'ACTIVE' && now > s.endsAt) { // the downgrade takes effect at the period end
-      await Account.updateOne({ _id: a._id }, { $set: { 'subscription.plan': 'NORMAL', 'subscription.nextPlan': null, 'greetings.on': false } });
-      await Outbox.updateMany({ accountId: a._id, channel: 'WHATSAPP', status: 'QUEUED' }, { $set: { status: 'CANCELLED', skipReason: 'Plan changed to Normal' } });
-      const asts = await User.find({ accountId: a._id, role: 'AST', status: { $ne: 'DISABLED' } }, { _id: 1 }).lean<Array<{ _id: string }>>();
-      await User.updateMany({ _id: { $in: asts.map((x) => x._id) } }, { $set: { status: 'DISABLED', disabledAt: now } });
-      await endSessions({ userId: { $in: asts.map((x) => x._id) } }, 'USER_DISABLED');
+      await applyNormalPlan(a._id, now);
       out.downgraded++;
     }
     if (eff !== s.status && ['GRACE', 'EXPIRED'].includes(eff)) {
@@ -201,6 +198,9 @@ export async function runSubscriptionJob(now = clock.now()) {
       }
     }
   }
+  // §9.6: one daily summary to SkyUp of trials ending in the next 7 days (none when there are none)
+  const trialsEnding = await Account.countDocuments({ status: 'ACTIVE', 'subscription.status': 'TRIAL', 'subscription.endsAt': { $gte: now, $lte: endOfDayIst(addDays(today, 7)) } });
+  if (trialsEnding) await notifySkyUp({ kind: 'TRIALS_ENDING', messageId: 'DSH-29', params: { n: trialsEnding }, dedupeKey: `DSH-29|${today}` }).catch(() => undefined);
   await SupportGrant.updateMany({ status: 'ACTIVE', endsAt: { $lte: now } }, { $set: { status: 'EXPIRED' } }); // SYS-14
   await ExportJob.updateMany({ status: 'READY', expiresAt: { $lte: now } }, { $set: { status: 'EXPIRED' } });
   return out;
@@ -245,17 +245,21 @@ export async function decideConfigChange(ctx: AuthContext, changeId: string, app
 export const configHistory = () => ConfigChange.find({}).sort({ createdAt: -1 }).limit(500).lean();
 
 // ── P-51 accounts ──
-/** The support summary: never customer personal data (AC-P51-3). */
-export async function accounts() {
-  const rows = await Account.find({}).sort({ createdAt: -1 }).limit(500).lean<Array<{ _id: string; status: string; subscription: Parameters<typeof effectiveStatus>[0] & { plan: string | null }; createdAt: Date }>>();
-  return Promise.all(rows.map(async (a) => {
-    const adv = await User.findOne({ accountId: a._id, role: 'ADV' }, { name: 1, lastLoginAt: 1 }).lean<{ name: string; lastLoginAt: Date | null }>();
-    const [customers, policies, users] = await Promise.all([Customer.countDocuments({ accountId: a._id }), Policy.countDocuments({ accountId: a._id }), User.countDocuments({ accountId: a._id })]);
-    return { id: a._id, advisor: adv?.name ?? '', status: a.status, plan: a.subscription.plan, subscription: effectiveStatus(a.subscription, clock.now()), createdAt: a.createdAt, lastLogin: adv?.lastLoginAt ?? null, counts: { customers, policies, users } };
-  }));
+/** P-51 suspend reasons (the BPD list). The design shows free text: both are accepted until the client decides (§9.9, Q117). */
+export const SUSPEND_REASONS = ['Misuse or spam', 'Suspected fraud', 'Requested by the advisor', 'Legal request', 'Other'] as const;
+export const SUPPORT_REASON_CODES = SUSPEND_REASONS; // the same list is offered for suspend and close
+export type AccountReason = { reasonCode?: (typeof SUSPEND_REASONS)[number] | null; reason?: string | null };
+/** The stored reason: the list item, with the note when there is one ("Other: …" needs the note). */
+export function reasonText(b: AccountReason) {
+  if (!b.reasonCode || b.reasonCode === 'Other') {
+    if (!b.reason) throw AppError.field('reason', 'GEN-01', { 'Field label': 'Reason' });
+    return b.reasonCode === 'Other' ? `Other: ${b.reason}` : b.reason;
+  }
+  return b.reason ? `${b.reasonCode}: ${b.reason}` : b.reasonCode;
 }
 /** Suspend (ADM-07): sessions ended, referral links revoked and queued messages cancelled in one step (AC-P51-1). */
-export async function suspend(ctx: AuthContext, id: string, reason: string, req: Request) {
+export async function suspend(ctx: AuthContext, id: string, b: AccountReason, req: Request) {
+  const reason = reasonText(b);
   await loadAcc(id);
   const users = (await User.find({ accountId: id }, { _id: 1 }).lean<Array<{ _id: string }>>()).map((u) => u._id);
   await withTx(async (session) => {
@@ -264,17 +268,21 @@ export async function suspend(ctx: AuthContext, id: string, reason: string, req:
     await endSessions({ userId: { $in: users } }, 'ACCOUNT_SUSPENDED', session);
     await ReferralCode.updateMany({ accountId: id, status: 'ACTIVE' }, { $set: { status: 'REVOKED' } }, { session: session ?? undefined });
     await Outbox.updateMany({ accountId: id, status: 'QUEUED' }, { $set: { status: 'CANCELLED', skipReason: 'Account suspended' } }, { session: session ?? undefined });
-    await audit({ entity: 'account', entityId: id, action: 'ACCOUNT_SUSPENDED', after: { reason } }, { req, session });
+    await useStepUp(req.stepUpId, 'ACCOUNT_SUSPENDED', session);
+    await audit({ entity: 'account', entityId: id, action: 'ACCOUNT_SUSPENDED', after: { reason, reasonCode: b.reasonCode ?? null }, stepUpId: req.stepUpId }, { req, session });
   });
 }
 /** Reactivate (ADM-08): everything resumes from the next job run; nothing missed is sent late (AC-P51-2). */
 export async function reactivate(ctx: AuthContext, id: string, reason: string, req: Request) {
   const u = await Account.updateOne({ _id: id, status: 'SUSPENDED' }, { $set: { status: 'ACTIVE', statusReason: reason } });
   if (!u.modifiedCount) throw AppError.invalidState('account', 'not suspended');
-  await audit({ entity: 'account', entityId: id, action: 'ACCOUNT_REACTIVATED', after: { reason } }, { req });
+  await useStepUp(req.stepUpId, 'ACCOUNT_REACTIVATED', null);
+  await audit({ entity: 'account', entityId: id, action: 'ACCOUNT_REACTIVATED', after: { reason }, stepUpId: req.stepUpId }, { req });
 }
-/** Close on request (ADM-09): kept for CFG-87 years, then deleted. */
-export async function close(ctx: AuthContext, id: string, reason: string, req: Request) {
+/** Close on request (ADM-09): the reason, the typed word CLOSE (change #51, ADM-14) and the OTP. Kept for CFG-87 years, then deleted. */
+export async function close(ctx: AuthContext, id: string, b: AccountReason & { confirmText?: string | null }, req: Request) {
+  if (b.confirmText !== 'CLOSE') throw AppError.field('confirmText', 'ADM-14'); // exactly, in capitals
+  const reason = reasonText(b);
   const users = (await User.find({ accountId: id }, { _id: 1 }).lean<Array<{ _id: string }>>()).map((u) => u._id);
   const retain = new Date(clock.now()); retain.setUTCFullYear(retain.getUTCFullYear() + cfgNum('CFG-87'));
   await withTx(async (session) => {
@@ -283,9 +291,51 @@ export async function close(ctx: AuthContext, id: string, reason: string, req: R
     await endSessions({ userId: { $in: users } }, 'ACCOUNT_CLOSED', session);
     await ReferralCode.updateMany({ accountId: id, status: 'ACTIVE' }, { $set: { status: 'REVOKED' } }, { session: session ?? undefined });
     await Outbox.updateMany({ accountId: id, status: 'QUEUED' }, { $set: { status: 'CANCELLED', skipReason: 'Account closed' } }, { session: session ?? undefined });
-    await audit({ entity: 'account', entityId: id, action: 'ACCOUNT_CLOSED', after: { reason } }, { req, session });
+    await useStepUp(req.stepUpId, 'ACCOUNT_CLOSED', session);
+    await audit({ entity: 'account', entityId: id, action: 'ACCOUNT_CLOSED', after: { reason, typedConfirmation: true }, stepUpId: req.stepUpId }, { req, session });
   });
   return { date: dmy(retain.toISOString().slice(0, 10)) };
+}
+
+/** What a change to the Normal plan does (P-47): greetings off, queued WhatsApp cancelled, assistants disabled and signed out. */
+async function applyNormalPlan(accountId: string, now: Date) {
+  await Account.updateOne({ _id: accountId }, { $set: { 'subscription.plan': 'NORMAL', 'subscription.nextPlan': null, 'greetings.on': false } });
+  await Outbox.updateMany({ accountId, channel: 'WHATSAPP', status: 'QUEUED' }, { $set: { status: 'CANCELLED', skipReason: 'Plan changed to Normal' } });
+  const asts = await User.find({ accountId, role: 'AST', status: { $ne: 'DISABLED' } }, { _id: 1 }).lean<Array<{ _id: string }>>();
+  await User.updateMany({ _id: { $in: asts.map((x) => x._id) } }, { $set: { status: 'DISABLED', disabledAt: now } });
+  await endSessions({ userId: { $in: asts.map((x) => x._id) } }, 'USER_DISABLED');
+}
+
+/**
+ * Change #50: a SkyUp Admin changes an advisor's plan (OTP, note). Only a paid plan in force (ACTIVE or GRACE) can be
+ * changed; a trial already has every feature and an expired account renews through billing.
+ *  - NOW: Premium starts at once (WhatsApp number set-up as on payment); Normal applies the downgrade effects at once.
+ *  - NEXT_RENEWAL: a downgrade waits for the period end (the existing scheduled downgrade). An upgrade at renewal is
+ *    not offered: the advisor chooses the plan when paying for the next period.
+ * No money moves and no credit is given for remaining days (DEC-06 open, Q118): the period end is unchanged.
+ */
+export async function changePlan(ctx: AuthContext, id: string, b: { toPlan: Plan; effective: 'NOW' | 'NEXT_RENEWAL'; note: string }, req: Request) {
+  const a = await loadAcc(id);
+  if (a.status !== 'ACTIVE') throw AppError.invalidState('account', a.status);
+  const eff = effectiveStatus(a.subscription, clock.now());
+  if (!['ACTIVE', 'GRACE'].includes(eff)) throw AppError.invalidState('subscription', eff);
+  if (a.subscription.plan === b.toPlan && !(b.toPlan === 'PREMIUM' && a.subscription.nextPlan === 'NORMAL')) throw AppError.invalidState('plan', b.toPlan === 'PREMIUM' ? 'Premium' : 'Normal');
+  if (b.effective === 'NEXT_RENEWAL' && b.toPlan === 'PREMIUM') throw AppError.field('effective', 'VAL-22');
+  const now = clock.now();
+  const from = a.subscription.plan;
+  const date = b.effective === 'NOW' ? istToday() : addDays(istDateOf(a.subscription.endsAt), 1);
+  if (b.toPlan === 'PREMIUM') {
+    await Account.updateOne({ _id: id }, { $set: { 'subscription.plan': 'PREMIUM', 'subscription.nextPlan': null,
+      ...(!a.subscription.waNumber ? { 'subscription.waNumber': { status: 'SETTING_UP', number: null, startedAt: now } } : {}) } });
+  } else if (b.effective === 'NOW') await applyNormalPlan(id, now);
+  else await Account.updateOne({ _id: id }, { $set: { 'subscription.nextPlan': 'NORMAL' } });
+  const change = await PlanChange.create({ accountId: id, fromPlan: from, toPlan: b.toPlan, effective: b.effective, effectiveFrom: date, note: b.note, changedBy: ctx.userId, stepUpId: req.stepUpId ?? null });
+  await useStepUp(req.stepUpId, 'PLAN_CHANGED_BY_SKYUP', null);
+  await audit({ entity: 'subscription', entityId: id, action: 'PLAN_CHANGED_BY_SKYUP', before: { plan: from }, after: { plan: b.toPlan, effective: b.effective, from: date, note: b.note }, stepUpId: req.stepUpId }, { req });
+  const label = b.toPlan === 'PREMIUM' ? 'Premium' : 'Normal';
+  const adv = await advisorOf(id);
+  if (adv) await notify({ userId: adv._id, accountId: id, kind: 'PLAN_CHANGED', messageId: 'SUB-18', params: { plan: label, date: dmy(date) }, dedupeKey: `SUB-18|${change._id}`, link: { type: 'PROFILE', id } }).catch(() => undefined);
+  return { change: { id: change._id, fromPlan: from, toPlan: b.toPlan, effective: b.effective, effectiveFrom: date }, params: { plan: label, date: dmy(date) } };
 }
 
 // ── P-52 export my data ──
@@ -349,7 +399,7 @@ export async function giveGrant(ctx: AuthContext, b: { granteeUserId: string; re
   return { grant: grant.toObject(), params: { name: g.name, time: `${dmy(time.slice(0, 10))} ${time.slice(11)}` } };
 }
 export async function endGrant(ctx: AuthContext, id: string, req: Request) {
-  const u = await SupportGrant.updateOne({ _id: id, accountId: ctx.accountId, status: 'ACTIVE' }, { $set: { status: 'ENDED', endedAt: clock.now() } });
+  const u = await SupportGrant.updateOne({ _id: id, accountId: ctx.accountId, status: 'ACTIVE' }, { $set: { status: 'ENDED', endedAt: clock.now(), endedBy: 'ADVISOR' } });
   if (!u.modifiedCount) throw AppError.invalidState('support access', 'not active');
   await audit({ entity: 'support', entityId: id, action: 'SUPPORT_GRANT_ENDED' }, { req });
 }
@@ -359,16 +409,20 @@ export async function grants(ctx: AuthContext) {
   return rows.map((r) => ({ id: r._id, to: names.get(r.granteeUserId) ?? '', reason: r.reason, status: r.status === 'ACTIVE' && r.endsAt <= clock.now() ? 'EXPIRED' : r.status, startsAt: r.startsAt, endsAt: r.endsAt, log: r.log }));
 }
 /** Every SkyUp read of client data checks the grant on the request (AC-P57-1/2) and is logged for the advisor (AC-P57-3). */
-async function underGrant(ctx: AuthContext, accountId: string, what: string, recordId: string | null) {
+export async function underGrant(ctx: AuthContext, accountId: string, what: string, recordId: string | null, req?: Request) {
   const u = await SupportGrant.findOneAndUpdate({ accountId, granteeUserId: ctx.userId, status: 'ACTIVE', endsAt: { $gt: clock.now() } }, { $push: { log: { at: clock.now(), what, recordId } } }, { new: true }).lean();
-  if (!u) throw new AppError(403, 'SUPPORT_GRANT_REQUIRED', 'SUP-03');
+  if (!u) {
+    // Change #56: the refused attempt is logged (who, which account, what) before SUP-03 is shown
+    await audit({ entity: 'support', entityId: accountId, action: 'SUPPORT_ACCESS_REFUSED', result: 'REFUSED', after: { what, recordId }, actor: { userId: ctx.userId, role: ctx.role, accountId } }, { req }).catch(() => undefined);
+    throw new AppError(403, 'SUPPORT_GRANT_REQUIRED', 'SUP-03');
+  }
 }
-export async function supportCustomers(ctx: AuthContext, accountId: string) {
-  await underGrant(ctx, accountId, 'Customer list', null);
+export async function supportCustomers(ctx: AuthContext, accountId: string, req?: Request) {
+  await underGrant(ctx, accountId, 'Customer list', null, req);
   return (await Customer.find({ accountId }, { number: 1, name: 1, status: 1 }).sort({ createdAt: -1 }).limit(500).lean<Array<{ _id: string; number: string; name: string; status: string }>>()).map((c) => ({ id: c._id, number: c.number, name: c.name, status: c.status }));
 }
-export async function supportCustomer(ctx: AuthContext, accountId: string, id: string) {
-  await underGrant(ctx, accountId, 'Customer', id);
+export async function supportCustomer(ctx: AuthContext, accountId: string, id: string, req?: Request) {
+  await underGrant(ctx, accountId, 'Customer', id, req);
   const c = await Customer.findOne({ _id: id, accountId }).lean<Record<string, any>>();
   if (!c) throw AppError.notFound();
   const docs = await CustomerDocument.find({ accountId, customerId: id }, { type: 1, label: 1, version: 1, status: 1 }).lean();

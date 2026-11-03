@@ -169,7 +169,7 @@ export async function existing(ctx: AuthContext, b: PolicyFields & { customerId:
   const cus = await Customer.findOne({ _id: b.customerId, accountId: ctx.accountId }, { name: 1, dob: 1, status: 1 }).lean<{ _id: string; name: string; dob: string | null; status: string }>();
   if (!cus) throw AppError.notFound();
   if (cus.status !== 'ACTIVE') throw AppError.invalidState('customer', cus.status);
-  const ins = await Insurer.findOne({ _id: b.insurerId, status: 'ACTIVE' }, { _id: 1 }).lean();
+  const ins = await Insurer.findOne({ _id: b.insurerId, status: 'ACTIVE', ownerAccountId: { $in: [null, ctx.accountId] } }, { _id: 1 }).lean();
   if (!ins) throw AppError.field('insurerId', 'VAL-22');
   let productName = b.productName?.trim() ?? null;
   if (b.productId) {

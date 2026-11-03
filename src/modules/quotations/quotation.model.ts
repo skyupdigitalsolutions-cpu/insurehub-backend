@@ -38,6 +38,8 @@ const quotationSchema = new Schema(
     inputs: { type: Schema.Types.Mixed, default: {} },
     calc: { type: Schema.Types.Mixed, default: null }, // the last calculation shown: breakdown, price version, inputs it used
     revisions: { type: [revisionSchema], default: [] },
+    /** Changes #14–#16: how this renewal quotation was made (null = not a renewal through P-38 modes). */
+    renewal: { type: Schema.Types.Mixed, default: null },
     version: { type: Number, default: 1 },
   },
   { timestamps: true, versionKey: false, minimize: false },

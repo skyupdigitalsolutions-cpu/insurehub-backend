@@ -10,7 +10,7 @@ import { normalizeMobile } from '../../lib/phone.js';
 import { Account } from '../accounts/account.model.js';
 import { audit } from '../audit/audit.service.js';
 import { Consent, Customer, FamilyMember } from '../customers/customer.model.js';
-import { notify } from '../notifications/notifications.service.js';
+import { notify, notifySkyUp } from '../notifications/notifications.service.js';
 import type { AuthContext } from '../rbac/capabilities.js';
 import { User } from '../users/user.model.js';
 import { JobRun } from '../renewals/renewal.model.js';
@@ -266,7 +266,11 @@ export async function messageWebhook(req: Request) {
     await Outbox.updateMany({ to: e.address.toLowerCase(), channel: 'EMAIL', status: 'QUEUED' }, { $set: { status: 'SKIPPED', skipReason: 'Email address bounced', statusAt: now } });
   } else if (e.type === 'TEMPLATE' && e.templateId) { // Meta's decision (AC-P39-1)
     const approved = e.status === ('APPROVED' as never) || (e as { decision?: string }).decision === 'APPROVED';
-    await MessageTemplate.updateOne({ _id: e.templateId, metaStatus: 'SUBMITTED' }, { $set: approved ? { status: 'ACTIVE', metaStatus: 'APPROVED' } : { status: 'REJECTED', metaStatus: 'REJECTED', metaReason: e.reason ?? 'Not stated' } });
+    const u = await MessageTemplate.updateOne({ _id: e.templateId, metaStatus: 'SUBMITTED' }, { $set: approved ? { status: 'ACTIVE', metaStatus: 'APPROVED' } : { status: 'REJECTED', metaStatus: 'REJECTED', metaReason: e.reason ?? 'Not stated' } });
+    if (!approved && u.modifiedCount) { // §9.6: SkyUp is told Meta refused it, with Meta's reason
+      const t = await MessageTemplate.findById(e.templateId, { name: 1 }).lean<{ name?: string }>();
+      await notifySkyUp({ kind: 'TEMPLATE_REJECTED_BY_META', messageId: 'DSH-28', params: { name: t?.name ?? 'template', reason: e.reason ?? 'Not stated' }, dedupeKey: `DSH-28|${e.templateId}|${now.toISOString()}`, link: { type: 'MESSAGE_TEMPLATE', id: e.templateId } }).catch(() => undefined);
+    }
   }
   return { processed: true };
 }

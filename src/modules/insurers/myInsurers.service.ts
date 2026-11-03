@@ -11,6 +11,7 @@ import type { AuthContext } from '../rbac/capabilities.js';
 import { User } from '../users/user.model.js';
 import { Insurer, type InsurerDoc } from './insurer.model.js';
 import { InsurerMapping, MAPPING_UNIQUE_INDEX, type MappingDoc } from './mapping.model.js';
+import { raiseFlag } from './agentCodeFlags.service.js';
 
 export interface AddBody { insurerId: string; agentCode: string; validUntil?: string | null; appointmentLetterFileId?: string | null; declaration: true }
 export interface EditBody { version: number; agentCode?: string; validUntil?: string | null; appointmentLetterFileId?: string | null }
@@ -63,7 +64,7 @@ export async function listMine(ctx: AuthContext) {
 /** The Add insurer picker: ACTIVE insurers this account has not added yet (P-07 step 2). */
 export async function available(ctx: AuthContext, q?: string) {
   const taken = await InsurerMapping.distinct('insurerId', { accountId: ctx.accountId });
-  const filter: Record<string, unknown> = { status: 'ACTIVE', _id: { $nin: taken } };
+  const filter: Record<string, unknown> = { status: 'ACTIVE', _id: { $nin: taken }, ownerAccountId: { $in: [null, ctx.accountId] } }; // + private (change #3)
   if (q) filter.name = { $regex: q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' };
   const list = await Insurer.find(filter).sort({ name: 1 }).limit(100).lean<InsurerDoc[]>();
   return list.map(insurerView);
@@ -81,11 +82,13 @@ async function flagSharedCode(m: Pick<MappingDoc, '_id' | 'accountId' | 'insurer
   if (!others.length) return;
   const ids = [m._id, ...others.map((o) => o._id)];
   await InsurerMapping.updateMany({ _id: { $in: ids }, flaggedAt: null }, { $set: { flaggedAt: clock.now() } });
-  await audit({ entity: 'insurerMapping', entityId: m._id, action: 'AGENT_CODE_SHARED_FLAGGED', after: { insurerId: m.insurerId, mappings: ids } }, { req });
+  const accounts = (await InsurerMapping.find({ _id: { $in: ids } }, { accountId: 1 }).lean<Array<{ accountId: string }>>()).map((x) => x.accountId);
+  const flag = await raiseFlag(m.insurerId, m.agentCode, accounts); // change #55: one review item per code
+  await audit({ entity: 'insurerMapping', entityId: m._id, action: 'AGENT_CODE_SHARED_FLAGGED', after: { insurerId: m.insurerId, mappings: ids, flagId: flag._id } }, { req });
 }
 
 export async function add(ctx: AuthContext, b: AddBody, req: Request) {
-  const insurer = await Insurer.findOne({ _id: b.insurerId, status: 'ACTIVE' }).lean<InsurerDoc>();
+  const insurer = await Insurer.findOne({ _id: b.insurerId, status: 'ACTIVE', ownerAccountId: { $in: [null, ctx.accountId] } }).lean<InsurerDoc>();
   if (!insurer) throw AppError.field('insurerId', 'VAL-22'); // FLD-20: must exist and be ACTIVE (AC-P07-3)
   const dup = () => new AppError(409, 'DUPLICATE', 'PRF-09', { insurer: insurer.name });
   if (await InsurerMapping.exists({ accountId: ctx.accountId, insurerId: insurer._id })) throw dup();
@@ -153,22 +156,4 @@ async function setStatus(ctx: AuthContext, m: MappingDoc, version: number, statu
     return r;
   });
   return (await views([u]))[0]!;
-}
-
-/** STF review list for DEC-09 flags: who shares which insurer and agent code. */
-export async function sharedCodeFlags() {
-  const rows = await InsurerMapping.find({ flaggedAt: { $type: 'date' } }).sort({ flaggedAt: -1 }).limit(500).lean<MappingDoc[]>();
-  const [insurers, advisors] = await Promise.all([
-    Insurer.find({ _id: { $in: rows.map((r) => r.insurerId) } }, { name: 1 }).lean<Array<{ _id: string; name: string }>>(),
-    User.find({ accountId: { $in: rows.map((r) => r.accountId) }, role: 'ADV' }, { name: 1, accountId: 1 }).lean(),
-  ]);
-  const ins = new Map(insurers.map((i) => [i._id, i.name]));
-  const adv = new Map(advisors.map((a) => [a.accountId, a.name]));
-  const groups = new Map<string, { insurer: string; agentCode: string; accounts: Array<{ accountId: string; advisorName: string | null; flaggedAt: Date }> }>();
-  for (const r of rows) {
-    const k = `${r.insurerId}|${r.agentCode}`;
-    if (!groups.has(k)) groups.set(k, { insurer: ins.get(r.insurerId) ?? r.insurerId, agentCode: r.agentCode, accounts: [] });
-    groups.get(k)!.accounts.push({ accountId: r.accountId, advisorName: adv.get(r.accountId) ?? null, flaggedAt: r.flaggedAt! });
-  }
-  return [...groups.values()];
 }

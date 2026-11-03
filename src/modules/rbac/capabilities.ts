@@ -87,6 +87,9 @@ export const CAPABILITIES = {
   /** P-49 configuration (ADM; a different ADM approves); P-51 accounts; P-47 offline payments; P-50 audit export. */
   'config.manage': ['ADM'],
   'accounts.admin': ['ADM'],
+  /** Change #49/#59: the SkyUp home and an advisor account's read tabs (counts and the advisor's own data only, AC-P51-3). */
+  'accounts.view': ['STF', 'ADM'],
+  'admin.dashboard': ['STF', 'ADM'],
   'audit.export': ['ADM'],
   /** P-57: SkyUp opens client records only under an active grant. */
   'support.use': ['STF', 'ADM'],

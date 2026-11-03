@@ -44,7 +44,7 @@ const tplView = (t: TemplateDoc, ctx?: AuthContext) => ({
 export async function listTypes(ctx: AuthContext) {
   await ensureStartingTypes();
   const [types, tpls] = await Promise.all([
-    InsuranceType.find().sort({ name: 1 }).lean<InsuranceTypeDoc[]>(),
+    InsuranceType.find({ ownerAccountId: null }).sort({ name: 1 }).lean<InsuranceTypeDoc[]>(), // SkyUp's categories only (change #4)
     TemplateVersion.find({ status: { $ne: 'RETIRED' } }, { features: 0, factors: 0, questions: 0 }).lean<TemplateDoc[]>(),
   ]);
   return types.map((t) => {
@@ -66,7 +66,7 @@ export async function getTemplate(ctx: AuthContext, id: string) {
 
 /** + Type: the type (ACTIVE) and an empty DRAFT template (P-21 step 2). */
 export async function createType(ctx: AuthContext, name: string, req: Request) {
-  if (await InsuranceType.exists({ nameKey: name.toLowerCase() })) throw AppError.invalidState('insurance type', 'already in the catalogue');
+  if (await InsuranceType.exists({ nameKey: name.toLowerCase(), ownerAccountId: null })) throw AppError.invalidState('insurance type', 'already in the catalogue');
   const t = await InsuranceType.create({ name, nameKey: name.toLowerCase() });
   const draft = await TemplateVersion.create({ typeId: t._id, number: 1, makerId: ctx.userId });
   await audit({ entity: 'insuranceType', entityId: t._id, action: 'INSURANCE_TYPE_CREATED', after: { name } }, { req });
@@ -214,29 +214,31 @@ export async function setTypeActive(ctx: AuthContext, id: string, b: { version: 
 // rating factors, quotation questions, drafts and who made them stay on the admin endpoints above.
 
 /** Insurance types an own product can be built on: ACTIVE, with a live (ACTIVE) template. */
-export async function ownProductTypes() {
+export async function ownProductTypes(accountId?: string | null) {
   const [types, live] = await Promise.all([
-    InsuranceType.find({ status: 'ACTIVE' }, { name: 1 }).sort({ name: 1 }).lean<Array<Pick<InsuranceTypeDoc, '_id' | 'name'>>>(),
+    // Change #4: SkyUp's categories and this account's private ones
+    InsuranceType.find({ status: 'ACTIVE', ownerAccountId: { $in: [null, ...(accountId ? [accountId] : [])] } }, { name: 1, ownerAccountId: 1 }).sort({ name: 1 }).lean<Array<Pick<InsuranceTypeDoc, '_id' | 'name' | 'ownerAccountId'>>>(),
     TemplateVersion.find({ status: 'ACTIVE' }, { typeId: 1, number: 1 }).lean<Array<Pick<TemplateDoc, '_id' | 'typeId' | 'number'>>>(),
   ]);
   const byType = new Map(live.map((t) => [t.typeId, t]));
   return types.flatMap((t) => {
     const tpl = byType.get(t._id);
-    return tpl ? [{ id: t._id, name: t.name, template: { id: tpl._id, number: tpl.number } }] : [];
+    return tpl ? [{ id: t._id, name: t.name, private: !!t.ownerAccountId, template: { id: tpl._id, number: tpl.number } }] : [];
   });
 }
 
 /** The live template's features for one type, in display order: the values an own product records. */
-export async function liveFeatures(typeId: string) {
-  const type = await InsuranceType.findById(typeId, { name: 1, status: 1 }).lean<Pick<InsuranceTypeDoc, '_id' | 'name' | 'status'>>();
-  if (!type) throw AppError.notFound();
+export async function liveFeatures(typeId: string, accountId?: string | null) {
+  const type = await InsuranceType.findById(typeId, { name: 1, status: 1, ownerAccountId: 1 }).lean<Pick<InsuranceTypeDoc, '_id' | 'name' | 'status' | 'ownerAccountId'>>();
+  // An advisor sees SkyUp's categories and their own; another account's private category does not exist for them
+  if (!type || (accountId !== undefined && type.ownerAccountId && type.ownerAccountId !== accountId)) throw AppError.notFound();
   if (type.status !== 'ACTIVE') throw AppError.invalidState('insurance type', type.status);
   const tpl = await TemplateVersion.findOne({ typeId, status: 'ACTIVE' }, { number: 1, features: 1 }).lean<Pick<TemplateDoc, '_id' | 'number' | 'features'>>();
   if (!tpl) throw AppError.invalidState('insurance type', 'without a live template');
   const features = [...tpl.features]
     .sort((a, b) => a.order - b.order)
     .map((f) => ({ key: f.key, name: f.name, group: f.group, dataType: f.dataType, requiredToPublish: f.requiredToPublish, order: f.order, help: f.help ?? null }));
-  return { typeId: type._id, typeName: type.name, template: { id: tpl._id, number: tpl.number }, features };
+  return { typeId: type._id, typeName: type.name, private: !!type.ownerAccountId, template: { id: tpl._id, number: tpl.number }, features };
 }
 
 /** Approvals queue entries for templates. */

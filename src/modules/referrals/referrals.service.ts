@@ -179,7 +179,7 @@ async function liveCode(code: string) {
 export async function publicPage(code: string) {
   const l = await liveCode(code);
   if (!l) return { valid: false, messageId: 'REF-04', message: (await import('../../lib/messages.js')).msg('REF-04') };
-  const types = await InsuranceType.find({ status: 'ACTIVE' }, { name: 1 }).sort({ name: 1 }).lean<Array<{ name: string }>>();
+  const types = await InsuranceType.find({ status: 'ACTIVE', ownerAccountId: null }, { name: 1 }).sort({ name: 1 }).lean<Array<{ name: string }>>();
   return { valid: true, advisorName: l.adv?.name ?? '', businessName: l.businessName, referrerFirstName: l.ref.name.split(' ')[0], relations: cfgList('CFG-141'), interests: types.map((t) => t.name),
     permission: `I agree that ${l.adv?.name ?? 'the advisor'} may contact me by phone and WhatsApp about insurance.` };
 }
@@ -198,7 +198,7 @@ export async function submit(code: string, b: SubmitBody, ip: string) {
   const thanks = { 'first name': b.name.split(' ')[0]!, 'Advisor name': l.adv?.name ?? '' };
   if (b.website) return { params: thanks }; // the invisible trap field: looks accepted, stores nothing
   if (!cfgList('CFG-141').includes(b.relation)) throw AppError.field('relation', 'VAL-22');
-  if (!(await InsuranceType.exists({ name: b.interest, status: 'ACTIVE' }))) throw AppError.field('interest', 'VAL-22');
+  if (!(await InsuranceType.exists({ name: b.interest, status: 'ACTIVE', ownerAccountId: null }))) throw AppError.field('interest', 'VAL-22');
   const accountId = l.c.accountId;
   const since = new Date(clock.now().getTime() - cfgNum('CFG-77') * 86_400_000);
   // A double submit (same code and mobile, a minute apart) is one submission

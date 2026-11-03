@@ -25,6 +25,7 @@ async function assertMobileFree(mobile: string) {
 const view = (u: UserDoc, showMobile: boolean) => ({
   id: u._id, name: u.name, mobile: showMobile ? u.mobile : maskMobile(u.mobile), role: u.role, roleLabel: ROLE_LABEL[u.role as keyof typeof ROLE_LABEL],
   status: u.status, invitedAt: u.invitedAt, activatedAt: u.activatedAt, lastLoginAt: u.lastLoginAt, version: u.version,
+  ...(u.role === 'STF' || u.role === 'ADM' ? { email: (u as { email?: string | null }).email ?? null } : {}),
 });
 
 // ── P-53 Assistants (Premium or Trial) ───────────────────────────────────────
@@ -93,13 +94,13 @@ export async function listStaff() {
   return users.map((u) => view(u, false));
 }
 
-export async function addStaff(ctx: AuthContext, b: { name: string; mobile: string; role: 'STF' | 'ADM' }, req: Request) {
+export async function addStaff(ctx: AuthContext, b: { name: string; mobile: string; role: 'STF' | 'ADM'; email?: string | null }, req: Request) {
   await assertMobileFree(b.mobile);
   try {
     const user = await withTx(async (session) => {
-      const u = await new User({ accountId: null, role: b.role, name: b.name, mobile: b.mobile, status: 'INVITED', invitedBy: ctx.userId, invitedAt: clock.now() }).save({ session: session ?? undefined });
+      const u = await new User({ accountId: null, role: b.role, name: b.name, mobile: b.mobile, email: b.email?.toLowerCase() ?? null, status: 'INVITED', invitedBy: ctx.userId, invitedAt: clock.now() }).save({ session: session ?? undefined });
       await useStepUp(req.stepUpId, 'STAFF_ADDED', session);
-      await audit({ entity: 'user', entityId: u._id, action: 'STAFF_ADDED', after: { name: u.name, mobile: u.mobile, role: u.role }, stepUpId: req.stepUpId }, { req, session });
+      await audit({ entity: 'user', entityId: u._id, action: 'STAFF_ADDED', after: { name: u.name, mobile: u.mobile, role: u.role, email: u.email ?? null }, stepUpId: req.stepUpId }, { req, session });
       return u;
     });
     return view(user.toObject() as UserDoc, false);

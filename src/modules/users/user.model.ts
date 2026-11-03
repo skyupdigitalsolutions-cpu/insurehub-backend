@@ -23,6 +23,8 @@ const userSchema = new Schema(
     activatedAt: { type: Date, default: null },
     disabledAt: { type: Date, default: null },
     lastLoginAt: { type: Date, default: null },
+    /** Change #57: optional, SkyUp users only (shown on the add-user form). */
+    email: { type: String, default: null },
     version: { type: Number, default: 1 },
   },
   { timestamps: true, versionKey: false },

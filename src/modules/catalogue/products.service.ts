@@ -11,6 +11,10 @@ import type { AuthContext } from '../rbac/capabilities.js';
 import { Commercial, Product, ProductVersion, type CommercialDoc, type ProductDoc, type ProductVersionDoc } from './product.model.js';
 import { InsuranceType, TemplateVersion, type InsuranceTypeDoc, type TemplateDoc } from './types.model.js';
 import { hasReference } from './prices.service.js';
+import { ocrMarksFor } from './ocr.service.js';
+import { assertVisibleInsurer, assertVisibleType } from './private.service.js';
+import { ProductVariant, defaultVariantFor } from './variant.model.js';
+import { asInput, checkVariants, copyVariants, missingOnVariants, normaliseCustomFeatures, variantsOf, writeVariants, type CustomFeature, type FeatureValue, type VariantInput } from './variants.service.js';
 
 /** The product version's values (validated field by field on the route; completeness is checked on submit). */
 export interface ProductData {
@@ -23,6 +27,8 @@ export interface ProductData {
   pricingMode?: 'RATE_TABLE' | 'MANUAL_ENTRY'; taxPercent?: number;
   nomineeRequired?: boolean; maxNominees?: number; gracePeriodDays?: number | null;
   brochureFileId?: string | null; sourceLink?: string | null; sourceCheckedOn?: string | null;
+  /** Change #5: features outside the template (the advisor's own, AI-suggested ones ticked to add, or SkyUp's). */
+  customFeatures?: CustomFeature[];
 }
 
 const NOT_STATED = 'Not stated by insurer'; // AC-P22-5
@@ -51,13 +57,13 @@ async function activeTemplate(typeId: string) {
  * everything else missing is listed in CAT-13. Verified products also need a source and, for RATE_TABLE, a price
  * version (P-24, Stage 4).
  */
-export async function publishCheck(kind: 'VERIFIED' | 'OWN', insurerId: string, typeId: string, templateId: string, d: ProductData, productId?: string) {
+export async function publishCheck(kind: 'VERIFIED' | 'OWN', insurerId: string, typeId: string, templateId: string, d: ProductData, productId?: string, variants: VariantInput[] = []) {
   if (!d.uin) throw AppError.field('uin', 'CAT-33'); // AC-P22-1
-  const fields: Array<{ field: string; messageId: 'CAT-16' | 'CAT-34' | 'CAT-15'; params?: Record<string, string | number> }> = [];
-  const f = (field: string, id: 'CAT-16' | 'CAT-34' | 'CAT-15', params: Record<string, string | number> = {}) => fields.push({ field, messageId: id, params });
+  const fields: Array<{ field: string; messageId: 'CAT-16' | 'CAT-34' | 'CAT-15' | 'CAT-48'; params?: Record<string, string | number> }> = [];
+  const f = (field: string, id: 'CAT-16' | 'CAT-34' | 'CAT-15' | 'CAT-48', params: Record<string, string | number> = {}) => fields.push({ field, messageId: id, params });
   const missing: string[] = [];
   const [insurer, type, tpl, used] = await Promise.all([
-    Insurer.findById(insurerId, { status: 1 }).lean<{ status: string }>(), InsuranceType.findById(typeId, { status: 1 }).lean<{ status: string }>(),
+    Insurer.findById(insurerId, { status: 1 }).lean<{ status: string }>(), InsuranceType.findById(typeId, { status: 1, ownerAccountId: 1 }).lean<{ status: string; ownerAccountId?: string | null }>(),
     activeTemplate(typeId), TemplateVersion.findById(templateId).lean<TemplateDoc>(),
   ]);
   if (insurer?.status !== 'ACTIVE') missing.push('an ACTIVE insurer');
@@ -83,6 +89,12 @@ export async function publishCheck(kind: 'VERIFIED' | 'OWN', insurerId: string, 
     const v = d.features?.[feat.key];
     if (!v || (!v.notStated && (v.value === undefined || v.value === null || v.value === ''))) missing.push(`a value for ${feat.name}`);
   }
+  // Change #4: a private category has no rating factors, so no rate table (Q4 default)
+  if (type?.ownerAccountId && d.pricingMode === 'RATE_TABLE') f('pricingMode', 'CAT-48');
+  // Changes #2, #5: variants and own features
+  const custom = d.customFeatures ?? [];
+  checkVariants(variants, d.sumInsured, new Set([...((used ?? tpl)?.features ?? []).map((x) => x.key), ...custom.map((c) => c.key!)]));
+  missing.push(...missingOnVariants(variants, ((used ?? tpl)?.features ?? []).filter((x) => x.requiredToPublish), (d.features ?? {}) as Record<string, FeatureValue>));
   if (kind === 'VERIFIED') {
     if (!d.brochureFileId && !(d.sourceLink && d.sourceCheckedOn)) missing.push('the insurer page link and the date it was checked');
     if (d.pricingMode === 'RATE_TABLE' && !(productId && (await hasReference(productId)))) missing.push('a SkyUp reference price version (P-24)');
@@ -131,15 +143,17 @@ export async function adminGet(id: string) {
   return {
     id: p._id, code: p.code, status: effectiveStatus(p), version: p.version, withdrawnReason: p.withdrawnReason,
     insurer: { id: p.insurerId, name: n.ins.get(p.insurerId)?.name }, type: { id: p.typeId, name: n.typ.get(p.typeId)?.name },
-    currentTemplateId: tpl?._id ?? null, versions: versions.map(versionView),
+    currentTemplateId: tpl?._id ?? null,
+    versions: await Promise.all(versions.map(async (v) => ({ ...versionView(v), variants: await variantsOf(v._id) }))), // change #2
   };
 }
 
 /** + Product: the product and its first DRAFT version, on the type's ACTIVE template. */
 export async function adminCreate(ctx: AuthContext, b: { insurerId: string; typeId: string; code: string }, req: Request) {
   const [ins, type, tpl] = await Promise.all([Insurer.findById(b.insurerId).lean<InsurerDoc>(), InsuranceType.findById(b.typeId).lean<InsuranceTypeDoc>(), activeTemplate(b.typeId)]);
-  if (ins?.status !== 'ACTIVE') throw AppError.field('insurerId', 'VAL-22');
-  if (type?.status !== 'ACTIVE' || !tpl) throw AppError.field('typeId', 'VAL-22');
+  // A verified product uses the SkyUp library only: never an advisor's private insurer or category (changes #3, #4)
+  if (ins?.status !== 'ACTIVE' || ins.ownerAccountId) throw AppError.field('insurerId', 'VAL-22');
+  if (type?.status !== 'ACTIVE' || type.ownerAccountId || !tpl) throw AppError.field('typeId', 'VAL-22');
   try {
     const out = await withTx(async (session) => {
       const [p] = await Product.create([{ kind: 'VERIFIED', insurerId: b.insurerId, typeId: b.typeId, code: b.code, makerId: ctx.userId }], { session: session ?? undefined });
@@ -166,6 +180,7 @@ export async function adminStartEdit(ctx: AuthContext, id: string, req: Request)
   ]);
   try {
     const v = await ProductVersion.create({ productId: id, number: (last?.number ?? 0) + 1, templateId: tpl?._id ?? pub?.templateId, makerId: ctx.userId, data: pub?.data ?? {} });
+    if (pub) await copyVariants(pub._id, v._id); // change #2: the draft starts with the live variants
     await audit({ entity: 'product', entityId: id, action: 'PRODUCT_DRAFT_STARTED', after: { number: v.number } }, { req });
     return { version: versionView(v.toObject() as ProductVersionDoc), messageId: 'CAT-27' as const };
   } catch (e) {
@@ -177,6 +192,7 @@ export async function adminStartEdit(ctx: AuthContext, id: string, req: Request)
 /** Save the DRAFT's values; two tabs: GEN-05. A draft verified product is never visible to advisors. */
 export async function adminSaveDraft(ctx: AuthContext, vid: string, b: { rev: number; data: ProductData }, req: Request) {
   if ((b.data.addOns?.length ?? 0) > cfgNum('CFG-40')) throw AppError.field('addOns', 'CAT-15', { 'CFG-40': cfgNum('CFG-40') });
+  if (b.data.customFeatures) b.data.customFeatures = normaliseCustomFeatures(b.data.customFeatures, 'SKYUP');
   const u = await ProductVersion.findOneAndUpdate({ _id: vid, status: 'DRAFT', rev: b.rev }, { $set: { data: b.data, makerId: ctx.userId, rejectReason: null }, $inc: { rev: 1 } }, { new: true }).lean<ProductVersionDoc>();
   if (!u) {
     const cur = await ProductVersion.findById(vid).lean<ProductVersionDoc>();
@@ -204,6 +220,24 @@ export async function adminUseCurrentTemplate(ctx: AuthContext, vid: string, b: 
   return versionView(u);
 }
 
+/** Change #2: a SkyUp draft's variants, replaced as a set (rev-checked with the draft, so two tabs get GEN-05). */
+export async function adminSaveVariants(ctx: AuthContext, vid: string, b: { rev: number; variants: VariantInput[] }, req: Request) {
+  const v = await ProductVersion.findById(vid).lean<ProductVersionDoc>();
+  if (!v) throw AppError.notFound();
+  if (v.status !== 'DRAFT') throw AppError.invalidState('product version', v.status.replace('_', ' '));
+  const tpl = await TemplateVersion.findById(v.templateId, { features: 1 }).lean<TemplateDoc>();
+  const d = (v.data ?? {}) as ProductData;
+  checkVariants(b.variants, d.sumInsured, new Set([...(tpl?.features ?? []).map((f) => f.key), ...(d.customFeatures ?? []).map((c) => c.key!)]));
+  const u = await withTx(async (session) => {
+    const claimed = await ProductVersion.findOneAndUpdate({ _id: vid, status: 'DRAFT', rev: b.rev }, { $inc: { rev: 1 } }, { new: true, session: session ?? undefined }).lean<ProductVersionDoc>();
+    if (!claimed) throw AppError.versionConflict('product version', versionView(v));
+    await writeVariants(v.productId, vid, d, b.variants, session);
+    await audit({ entity: 'productVersion', entityId: vid, action: 'PRODUCT_VARIANTS_SAVED', after: { variants: b.variants.map((x) => x.name) } }, { req, session });
+    return claimed;
+  });
+  return { ...versionView(u), variants: await variantsOf(vid) };
+}
+
 async function productItem(v: ProductVersionDoc) {
   const p = await Product.findById(v.productId).lean<ProductDoc>();
   return `${(v.data as ProductData).name ?? p?.code ?? 'Product'} version ${v.number}`;
@@ -214,7 +248,8 @@ export async function adminSubmit(ctx: AuthContext, vid: string, b: { rev: numbe
   if (!v) throw AppError.notFound();
   if (v.status !== 'DRAFT') throw AppError.invalidState('product version', v.status.replace('_', ' '));
   const p = await Product.findById(v.productId).lean<ProductDoc>();
-  await publishCheck('VERIFIED', p!.insurerId, p!.typeId, v.templateId, v.data as ProductData, p!._id);
+  const drafted = (await ProductVariant.find({ productVersionId: vid }).sort({ position: 1 }).lean()).map(asInput);
+  await publishCheck('VERIFIED', p!.insurerId, p!.typeId, v.templateId, v.data as ProductData, p!._id, drafted);
   const u = await ProductVersion.findOneAndUpdate({ _id: vid, status: 'DRAFT', rev: b.rev }, { $set: { status: 'PENDING_APPROVAL', submittedAt: clock.now(), makerId: ctx.userId }, $inc: { rev: 1 } }, { new: true }).lean<ProductVersionDoc>();
   if (!u) throw AppError.versionConflict('product version', versionView(v));
   await audit({ entity: 'productVersion', entityId: vid, action: 'PRODUCT_SUBMITTED' }, { req });
@@ -240,6 +275,7 @@ export async function adminApprove(ctx: AuthContext, vid: string, b: { rev: numb
     if (!claimed) throw AppError.invalidState('product version', 'already decided'); // GEN-04
     await ProductVersion.updateMany({ productId: v.productId, status: 'PUBLISHED' }, { $set: { status: 'SUPERSEDED' } }, { session: session ?? undefined });
     const pub = await ProductVersion.findOneAndUpdate({ _id: vid }, { $set: { status: 'PUBLISHED', isOpen: null, publishedAt: now } }, { new: true, session: session ?? undefined }).lean<ProductVersionDoc>();
+    if (!(await ProductVariant.exists({ productVersionId: vid }).session(session))) await writeVariants(v.productId, vid, pub!.data as ProductData, [], session); // a published version always has a default variant
     const d = pub!.data as ProductData;
     const prod = await Product.findById(v.productId).session(session).lean<ProductDoc>();
     await Product.updateOne({ _id: v.productId }, { $set: {
@@ -275,7 +311,8 @@ export async function adminWithdraw(ctx: AuthContext, id: string, b: { version: 
   const status = to === 'WITHDRAWN' ? 'WITHDRAWN' : statusFor(p.launchDate);
   const u = await Product.findOneAndUpdate({ _id: id, version: b.version }, { $set: { status, withdrawnReason: to === 'WITHDRAWN' ? b.reason : null }, $inc: { version: 1 } }, { new: true }).lean<ProductDoc>();
   if (!u) throw AppError.versionConflict('product', null);
-  await audit({ entity: 'product', entityId: id, action: to === 'WITHDRAWN' ? 'PRODUCT_WITHDRAWN' : 'PRODUCT_MADE_AVAILABLE', before: { status: p.status }, after: { status, reason: b.reason ?? null } }, { req });
+  if (to === 'WITHDRAWN') await useStepUp(req.stepUpId, 'PRODUCT_WITHDRAWN', null);
+  await audit({ entity: 'product', entityId: id, action: to === 'WITHDRAWN' ? 'PRODUCT_WITHDRAWN' : 'PRODUCT_MADE_AVAILABLE', before: { status: p.status }, after: { status, reason: b.reason ?? null }, stepUpId: to === 'WITHDRAWN' ? req.stepUpId : null }, { req });
   return { id: u._id, status: effectiveStatus(u), version: u.version, name: u.name };
 }
 
@@ -323,8 +360,13 @@ export async function advisorGet(ctx: AuthContext, id: string) {
   const v = await ProductVersion.findById(p.publishedVersionId).lean<ProductVersionDoc>();
   const n = await names([p.insurerId], [p.typeId]);
   const tpl = v ? await TemplateVersion.findById(v.templateId, { features: 1 }).lean<TemplateDoc>() : null;
+  if (v) await defaultVariantFor(v as never); // versions from before variants get their default on first read (Stage B)
+  const d = (v?.data ?? {}) as ProductData;
+  const shown = (x: FeatureValue): FeatureValue => (x?.notStated ? { value: NOT_STATED, page: null } : x);
   return {
     id: p._id, kind: p.kind, code: p.code, status: effectiveStatus(p), version: p.version, insurerId: p.insurerId, typeId: p.typeId,
+    variants: v ? await variantsOf(v._id, (d.features ?? {}) as Record<string, FeatureValue>, shown) : [], // change #2
+    customFeatures: d.customFeatures ?? [], // change #5
     insurer: n.ins.get(p.insurerId)?.name ?? null, type: n.typ.get(p.typeId)?.name ?? null,
     publishedVersion: v ? {
       id: v._id, number: v.number, templateId: v.templateId, data: advisorData((v.data ?? {}) as ProductData),
@@ -338,17 +380,23 @@ export async function advisorGet(ctx: AuthContext, id: string) {
 
 // ── Own products (ADV): publish at once in this account (P-22 step 2) ──
 
-export async function ownCreate(ctx: AuthContext, b: { insurerId: string; typeId: string; code: string; data: ProductData }, req: Request) {
+export async function ownCreate(ctx: AuthContext, b: { insurerId: string; typeId: string; code: string; data: ProductData; variants?: VariantInput[]; ocrJobId?: string | null }, req: Request) {
+  // Changes #3, #4: the library or this account's private insurer and category; nothing of another account's
+  await assertVisibleInsurer(ctx.accountId, b.insurerId);
+  await assertVisibleType(ctx.accountId, b.typeId);
   const tpl = await activeTemplate(b.typeId);
   if (!tpl) throw AppError.field('typeId', 'VAL-22');
-  await publishCheck('OWN', b.insurerId, b.typeId, tpl._id, b.data);
+  if (b.data.customFeatures) b.data.customFeatures = normaliseCustomFeatures(b.data.customFeatures, 'ADVISOR');
+  await publishCheck('OWN', b.insurerId, b.typeId, tpl._id, b.data, undefined, b.variants ?? []);
+  const marks = b.ocrJobId ? await ocrMarksFor(ctx, b.ocrJobId, b.typeId) : {};
   if (b.data.brochureFileId) await assertOwnFile(ctx, b.data.brochureFileId, 'BROCHURE', 'brochureFileId');
   try {
     const out = await withTx(async (session) => {
       const now = clock.now();
       const [p] = await Product.create([{ kind: 'OWN', accountId: ctx.accountId, insurerId: b.insurerId, typeId: b.typeId, code: b.code, makerId: ctx.userId, status: statusFor(b.data.launchDate), name: b.data.name, launchDate: b.data.launchDate }], { session: session ?? undefined });
-      const [v] = await ProductVersion.create([{ productId: p!._id, number: 1, status: 'PUBLISHED', isOpen: null, templateId: tpl._id, makerId: ctx.userId, data: b.data, publishedAt: now }], { session: session ?? undefined });
+      const [v] = await ProductVersion.create([{ productId: p!._id, number: 1, status: 'PUBLISHED', isOpen: null, templateId: tpl._id, makerId: ctx.userId, data: b.data, publishedAt: now, ocrMarks: marks }], { session: session ?? undefined });
       await Product.updateOne({ _id: p!._id }, { $set: { publishedVersionId: v!._id } }, { session: session ?? undefined });
+      await writeVariants(p!._id, v!._id, b.data, b.variants, session);
       await audit({ entity: 'product', entityId: p!._id, action: 'OWN_PRODUCT_CREATED', after: { code: b.code } }, { req, session });
       return p!._id;
     });
@@ -360,12 +408,15 @@ export async function ownCreate(ctx: AuthContext, b: { insurerId: string; typeId
 }
 
 /** Edit an own product: a new version, PUBLISHED at once; the old one SUPERSEDED (one transaction). */
-export async function ownEdit(ctx: AuthContext, id: string, b: { version: number; data: ProductData }, req: Request) {
+export async function ownEdit(ctx: AuthContext, id: string, b: { version: number; data: ProductData; variants?: VariantInput[] }, req: Request) {
   const p = await Product.findOne({ _id: id, kind: 'OWN', accountId: ctx.accountId }).lean<ProductDoc>();
   if (!p) throw AppError.notFound();
   const tpl = await activeTemplate(p.typeId);
   if (!tpl) throw AppError.invalidState('insurance type', 'without a live template');
-  await publishCheck('OWN', p.insurerId, p.typeId, tpl._id, b.data);
+  if (b.data.customFeatures) b.data.customFeatures = normaliseCustomFeatures(b.data.customFeatures, 'ADVISOR');
+  // No variants sent: the live ones carry over (checked against the new values)
+  const keep = b.variants === undefined && p.publishedVersionId ? (await ProductVariant.find({ productVersionId: p.publishedVersionId }).sort({ position: 1 }).lean()).map(asInput) : b.variants ?? [];
+  await publishCheck('OWN', p.insurerId, p.typeId, tpl._id, b.data, undefined, keep);
   if (b.data.brochureFileId) await assertOwnFile(ctx, b.data.brochureFileId, 'BROCHURE', 'brochureFileId');
   await withTx(async (session) => {
     const claimed = await Product.findOneAndUpdate({ _id: id, accountId: ctx.accountId, version: b.version }, { $set: { name: b.data.name, launchDate: b.data.launchDate, ...(p.status === 'WITHDRAWN' ? {} : { status: statusFor(b.data.launchDate) }) }, $inc: { version: 1 } }, { new: true, session: session ?? undefined }).lean<ProductDoc>();
@@ -374,6 +425,7 @@ export async function ownEdit(ctx: AuthContext, id: string, b: { version: number
     await ProductVersion.updateMany({ productId: id, status: 'PUBLISHED' }, { $set: { status: 'SUPERSEDED' } }, { session: session ?? undefined });
     const [v] = await ProductVersion.create([{ productId: id, number: (last?.number ?? 0) + 1, status: 'PUBLISHED', isOpen: null, templateId: tpl._id, makerId: ctx.userId, data: b.data, publishedAt: clock.now() }], { session: session ?? undefined });
     await Product.updateOne({ _id: id }, { $set: { publishedVersionId: v!._id } }, { session: session ?? undefined });
+    await writeVariants(id, v!._id, b.data, keep, session);
     await audit({ entity: 'product', entityId: id, action: 'OWN_PRODUCT_EDITED', after: { number: v!.number } }, { req, session });
   });
   return advisorGet(ctx, id);

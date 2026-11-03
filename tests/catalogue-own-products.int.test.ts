@@ -54,7 +54,7 @@ describe('P-22 step 2: types and live features for + My product (read-only)', ()
     const r = await as(adv.token).get('/my-products/types');
     expect(r.status).toBe(200);
     // Motor has only a DRAFT template; Travel is INACTIVE: an own product could not be built on either.
-    expect(r.body.data).toEqual([{ id: cat.healthId, name: 'Health', template: { id: cat.tplId, number: 1 } }]);
+    expect(r.body.data).toEqual([{ id: cat.healthId, name: 'Health', private: false, template: { id: cat.tplId, number: 1 } }]); // `private`: Stage F (change #4)
   });
 
   it('returns the live template\'s features in order, and nothing an advisor does not need', async () => {
@@ -63,7 +63,7 @@ describe('P-22 step 2: types and live features for + My product (read-only)', ()
     const r = await as(adv.token).get(`/my-products/types/${cat.healthId}/template`);
     expect(r.status).toBe(200);
     expect(r.body.data).toEqual({
-      typeId: cat.healthId, typeName: 'Health', template: { id: cat.tplId, number: 1 },
+      typeId: cat.healthId, typeName: 'Health', private: false, template: { id: cat.tplId, number: 1 },
       features: [
         { key: 'room_rent', name: 'Room rent limit', group: 'Limits and sub-limits', dataType: 'Amount in ₹', requiredToPublish: true, order: 1, help: 'Per day' },
         { key: 'ped_wait', name: 'Pre-existing disease waiting period', group: 'Waiting periods', dataType: 'Months', requiredToPublish: true, order: 2, help: null },
@@ -200,4 +200,4 @@ describe('found while building the Stage 3b screens', () => {
     const got = (await as(staff.token).get(`/admin/products/${made.body.data.productId}`)).body.data;
     expect(got.versions[0].data).toEqual({});
   });
-});
+}); 

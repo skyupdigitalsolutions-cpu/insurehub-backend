@@ -131,7 +131,7 @@ export function startReading(ctx: AuthContext, documentId: string, fileId: strin
       const values: Record<string, unknown> = { ...(read?.values ?? {}) };
       if (type === 'Old policy' && read?.text) { // the insurer: a catalogue name printed on the policy
         const text = read.text.toLowerCase();
-        const hit = (await Insurer.find({}, { name: 1 }).lean<Array<{ _id: string; name: string }>>()).find((i) => text.includes(i.name.toLowerCase()));
+        const hit = (await Insurer.find({ ownerAccountId: { $in: [null, ctx.accountId] } }, { name: 1 }).lean<Array<{ _id: string; name: string }>>()).find((i) => text.includes(i.name.toLowerCase()));
         if (hit) values.insurerId = hit._id;
       }
       await CustomerDocument.updateOne({ _id: documentId, readStatus: 'PENDING' }, { $set: { readStatus: 'DONE', readValuesEnc: encryptField(JSON.stringify(values)) } });
@@ -180,7 +180,7 @@ export async function confirm(ctx: AuthContext, id: string, b: { rev: number; va
   const parsed = confirmSchemas[d.type]!.safeParse(b.values ?? {});
   if (!parsed.success) throw AppError.fields(parsed.error.issues.map((i) => toField(i, confirmLabels)));
   const values = parsed.data as Record<string, unknown>;
-  if (d.type === 'Old policy' && !(await Insurer.exists({ _id: values.insurerId }))) throw AppError.field('insurerId', 'VAL-22');
+  if (d.type === 'Old policy' && !(await Insurer.exists({ _id: values.insurerId, ownerAccountId: { $in: [null, ctx.accountId] } }))) throw AppError.field('insurerId', 'VAL-22');
 
   const c = await loadCustomer(ctx, d.customerId);
   await assertConsent(c);

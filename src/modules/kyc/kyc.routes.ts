@@ -26,6 +26,8 @@ const decisionBody = z.object({
   decision: required(enumOf(['VERIFY', 'REJECT'] as const)),
   reason: optional(enumOf(kyc.REJECT_REASONS)),
   note: optional(notes()),
+  // Change #48: the reviewer's four ticks, kept with the decision
+  checklist: z.object({ panReadable: z.boolean(), nameMatches: z.boolean(), licenceValid: z.boolean(), photoClear: z.boolean() }).strict().nullable().optional(),
 }).strict();
 
 const accountParam = z.object({ accountId: z.string().regex(/^acc_[a-f0-9]{28}$/) });

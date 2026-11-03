@@ -25,7 +25,7 @@ describe('reading switches', () => {
     const adv = await registerAdvisor();
     const r = await as(adv.token).get('/flags');
     expect(r.body.data).toEqual({
-      skyup_direct_publish: false, quotation_accept_requires_payment: false, payment_skips_auto_accept: false,
+      quotation_accept_requires_payment: false, payment_skips_auto_accept: false,
       campaigns_website: true, campaigns_google: true, campaigns_meta: false, campaigns_linkedin: false,
     });
     expect((await request(app).get('/v1/flags')).status).toBe(401);
@@ -34,7 +34,7 @@ describe('reading switches', () => {
   it('only a SkyUp Admin sees and changes them (STF and advisors refused)', async () => {
     const { A } = await admin();
     const list = (await A.get('/admin/flags')).body.data as Array<{ key: string; scope: string; enabled: boolean; accounts: unknown }>;
-    expect(list.find((f) => f.key === 'skyup_direct_publish')).toMatchObject({ scope: 'GLOBAL', enabled: false, default: false, accounts: null });
+    expect(list.find((f) => f.key === 'skyup_direct_publish')).toBeUndefined(); // removed in Stage E2 (approval is gone for good)
     expect(list.find((f) => f.key === 'campaigns_meta')).toMatchObject({ scope: 'ACCOUNT', accounts: { on: 0, off: 0 } });
     const stfMobile = newMobile();
     await User.create({ accountId: null, role: 'STF', name: 'SkyUp Staff', mobile: normalizeMobile(stfMobile), status: 'ACTIVE', activatedAt: new Date() });
@@ -46,16 +46,16 @@ describe('reading switches', () => {
 describe('changing a platform value', () => {
   it('needs the step-up OTP and a reason; applies at once; audited with the reason and the OTP verification', async () => {
     const { A, put } = await admin();
-    expect(err(await A.put('/admin/flags/skyup_direct_publish', { enabled: true, reason: 'Go live' }))).toMatchObject({ status: 403, messageId: 'AUTH-26' });
-    const noReason = await put('/admin/flags/skyup_direct_publish', { enabled: true });
+    expect(err(await A.put('/admin/flags/quotation_accept_requires_payment', { enabled: true, reason: 'Go live' }))).toMatchObject({ status: 403, messageId: 'AUTH-26' });
+    const noReason = await put('/admin/flags/quotation_accept_requires_payment', { enabled: true });
     expect(noReason.body.error.fields[0]).toMatchObject({ field: 'reason', messageId: 'GEN-01' });
-    const r = await put('/admin/flags/skyup_direct_publish', { enabled: true, reason: 'Client approved direct publish (2 Nov)' });
+    const r = await put('/admin/flags/quotation_accept_requires_payment', { enabled: true, reason: 'Client approved direct publish (2 Nov)' });
     expect(r.status).toBe(200);
     expect(r.body.meta.message).toBe('Feature switch saved. It applies from now on.');
-    expect(r.body.data).toMatchObject({ key: 'skyup_direct_publish', enabled: true, lastChange: { reason: 'Client approved direct publish (2 Nov)' } });
-    expect(flagOn('skyup_direct_publish')).toBe(true);
+    expect(r.body.data).toMatchObject({ key: 'quotation_accept_requires_payment', enabled: true, lastChange: { reason: 'Client approved direct publish (2 Nov)' } });
+    expect(flagOn('quotation_accept_requires_payment')).toBe(true);
     const adv = await registerAdvisor();
-    expect((await as(adv.token).get('/flags')).body.data.skyup_direct_publish).toBe(true);
+    expect((await as(adv.token).get('/flags')).body.data.quotation_accept_requires_payment).toBe(true);
     const log = await AuditLog.findOne({ action: 'FEATURE_FLAG_CHANGED' }).lean<{ before: { enabled: boolean }; after: { enabled: boolean; reason: string; stepUpId: string | null } }>();
     expect(log).toMatchObject({ before: { enabled: false }, after: { enabled: true, reason: 'Client approved direct publish (2 Nov)' } });
     expect(log!.after.stepUpId).toMatch(/\S/);
@@ -86,10 +86,11 @@ describe('per-account values', () => {
     expect(flagOn('quotation_accept_requires_payment', one.user.accountId)).toBe(true);
   });
 
-  it('a platform-wide switch cannot be set for one account (FLG-02); an unknown account is not found', async () => {
+  // No platform-wide switch exists since Stage E2; FLG-02 stays in the code for the next one.
+  it('an unknown account is not found; a removed switch is not found', async () => {
     const { put } = await admin();
     const adv = await registerAdvisor();
-    expect(err(await put(`/admin/flags/skyup_direct_publish/accounts/${adv.user.accountId}`, { enabled: true, reason: 'Try it' }))).toMatchObject({ status: 409, messageId: 'FLG-02' });
+    expect(err(await put(`/admin/flags/skyup_direct_publish/accounts/${adv.user.accountId}`, { enabled: true, reason: 'Try it' }))).toMatchObject({ status: 404 });
     expect(err(await put(`/admin/flags/campaigns_meta/accounts/acc_${'f'.repeat(28)}`, { enabled: true, reason: 'Try it' }))).toMatchObject({ status: 404 });
   });
 });

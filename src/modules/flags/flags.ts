@@ -19,10 +19,8 @@ export type FlagScope = 'GLOBAL' | 'ACCOUNT';
 interface FlagDef { scope: FlagScope; default: boolean; description: string; ref: string }
 
 export const FLAGS = {
-  skyup_direct_publish: {
-    scope: 'GLOBAL', default: false, ref: 'Change analysis §9.1, rows 33–47',
-    description: 'SkyUp changes go live at once with OTP and audit: no second-admin approval for insurers, templates, products, corrections, message templates and configuration.',
-  },
+  // skyup_direct_publish removed in Stage E2: approval is gone for good (Q92), so there is no old path to switch back to.
+  // A stored value for it is ignored (unknown switches are skipped on load).
   quotation_accept_requires_payment: {
     scope: 'ACCOUNT', default: false, ref: 'Change #11, §5.2',
     description: 'Mark accepted is refused until the quotation has a PAID payment.',

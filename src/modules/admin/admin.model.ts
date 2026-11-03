@@ -57,6 +57,20 @@ const exportSchema = new Schema(
 exportSchema.index({ accountId: 1, day: 1 });
 export const ExportJob = model('ExportJob', exportSchema, 'export_jobs');
 
+/** Change #50: a plan change made by SkyUp (no payment). Kept for the subscription tab and the audit trail. */
+const planChangeSchema = new Schema(
+  {
+    _id: { type: String, default: () => newId('plc') },
+    accountId: { type: String, required: true },
+    fromPlan: { type: String, default: null }, toPlan: { type: String, enum: ['NORMAL', 'PREMIUM'], required: true },
+    effective: { type: String, enum: ['NOW', 'NEXT_RENEWAL'], required: true }, effectiveFrom: { type: String, required: true }, // YYYY-MM-DD
+    note: { type: String, required: true }, changedBy: { type: String, required: true }, stepUpId: { type: String, default: null },
+  },
+  { timestamps: { createdAt: true, updatedAt: false }, versionKey: false },
+);
+planChangeSchema.index({ accountId: 1, createdAt: -1 });
+export const PlanChange = model('PlanChange', planChangeSchema, 'plan_changes');
+
 /** P-57 support grant: the advisor gives one SkyUp person time-limited access; every record opened is logged. */
 const grantSchema = new Schema(
   {
@@ -64,10 +78,13 @@ const grantSchema = new Schema(
     accountId: { type: String, required: true }, granteeUserId: { type: String, required: true }, reason: { type: String, required: true },
     status: { type: String, enum: ['ACTIVE', 'ENDED', 'EXPIRED'], default: 'ACTIVE' },
     startsAt: { type: Date, required: true }, endsAt: { type: Date, required: true }, endedAt: { type: Date, default: null }, givenBy: { type: String, required: true },
+    /** Change #56: who ended it: the advisor (ADVISOR) or the SkyUp person ("End my session", GRANTEE). */
+    endedBy: { type: String, enum: ['ADVISOR', 'GRANTEE', null], default: null },
     log: { type: [new Schema({ at: Date, what: String, recordId: { type: String, default: null } }, { _id: false })], default: [] },
   },
   { timestamps: true, versionKey: false },
 );
 grantSchema.index({ accountId: 1, granteeUserId: 1, status: 1 });
+grantSchema.index({ granteeUserId: 1, createdAt: -1 });
 export type GrantDoc = InferSchemaType<typeof grantSchema> & { _id: string };
 export const SupportGrant = model('SupportGrant', grantSchema, 'support_grants');

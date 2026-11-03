@@ -58,7 +58,7 @@ export async function start(ctx: AuthContext, quotationId: string, req: Request)
         await Quotation.updateOne({ _id: quotationId }, { $set: { status: 'ACCEPTED', revisions }, $inc: { version: 1 } }, { session: session ?? undefined });
       }
       const number = await nextNumber(ctx.accountId!, 'proposal', session);
-      const [p] = await Proposal.create([{ accountId: ctx.accountId, quotationId, revision: rev.revision, customerId: snap.customer.id, number, createdBy: ctx.userId,
+      const [p] = await Proposal.create([{ accountId: ctx.accountId, quotationId, revision: rev.revision, variantId: (rev as { variantId?: string | null }).variantId ?? null, customerId: snap.customer.id, number, createdBy: ctx.userId, // change #2
         members: snap.people.map((m) => ({ name: m.name, relationship: m.relationship, dob: m.dob, age: m.age })), questions: questionsFor(type?.name ?? '') }], { session: session ?? undefined });
       await audit({ entity: 'proposal', entityId: p!._id, action: 'PROPOSAL_STARTED', after: { quotationId, number } }, { req, session });
       return p!.toObject() as ProposalDoc;
@@ -139,6 +139,7 @@ export async function submit(ctx: AuthContext, id: string, b: { version: number 
     const q = await Quotation.findById(p.quotationId).lean<QuotationDoc>();
     const qInputs = (q!.revisions.find((r) => r.revision === p.revision)!.snapshot as { inputs: { typeId: string; sumInsured: number; people: string[] } }).inputs;
     const [pol] = await Policy.create([{ accountId: ctx.accountId, customerId: p.customerId, proposalId: id, quotationId: p.quotationId, createdBy: ctx.userId,
+      variantId: (p as { variantId?: string | null }).variantId ?? (q!.revisions.find((r) => r.revision === p.revision) as { variantId?: string | null } | undefined)?.variantId ?? null, // change #2
       insurerId: snap.insurer.id, productId: snap.product.id, productName: snap.product.name, typeId: qInputs.typeId, sumInsured: qInputs.sumInsured, premium: paid!.amount,
       insured: (p.members as Member[]).map((m, i) => ({ key: qInputs.people[i] ?? null, name: m.name, relationship: m.relationship, dob: m.dob })), frozen: {
       members: p.members, declarations: p.declarations, nominees: p.nominees, product: snap.product, insurer: snap.insurer, premium: snap.breakdown.final,

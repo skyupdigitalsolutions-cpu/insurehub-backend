@@ -19,14 +19,18 @@ import { TemplateVersion, type TemplateDoc } from '../catalogue/types.model.js';
 import { User } from '../users/user.model.js';
 import type { Breakdown } from './engine.js';
 import { Quotation } from './quotation.model.js';
-import { quotationChecks, quotationContext, quotationPremium, quotationView, save as saveQuotation, start as startQuotation, DISCLAIMER, type Inputs } from './quotations.service.js';
+import { addOnChecks, pricingInputs, quotationChecks, typedBaseChecks, quotationContext, quotationPremium, quotationView, save as saveQuotation, start as startQuotation, DISCLAIMER, type Inputs } from './quotations.service.js';
 
 /**
  * P-30 comparison quotation: 2 to 3 products side by side from catalogue facts, priced on the SAME common inputs.
  * Its own status and sharing never change a quotation made from it, and the reverse (AC-P30-4). Never a payment link.
  * DRAFT → READY → SHARED → PRODUCT_CHOSEN or EXPIRED.
  */
-type Option = { productId: string; riders?: string[]; override?: Inputs['override']; discount?: Inputs['discount']; manual?: Inputs['manual'] };
+type Option = { productId: string; riders?: string[]; override?: Inputs['override']; discount?: Inputs['discount']; manual?: Inputs['manual'];
+  // Change #13: variant, typed base premium and add-ons per option; variants of one product are separate options
+  variantId?: string | null; typedBasePremium?: number | null; riderPrices?: Inputs['riderPrices']; customAddOns?: Inputs['customAddOns'] };
+const optionKey = (o: { productId: string; variantId?: string | null }) => `${o.productId}|${o.variantId ?? ''}`;
+const extras = (o: Option) => ({ variantId: o.variantId ?? null, typedBasePremium: o.typedBasePremium ?? null, riderPrices: o.riderPrices ?? {}, customAddOns: o.customAddOns ?? [] });
 const cqSchema = new Schema(
   {
     _id: { type: String, default: () => newId('cq') },
@@ -39,7 +43,7 @@ const cqSchema = new Schema(
     snapshot: { type: Schema.Types.Mixed, default: null }, pdfFileId: { type: String, default: null },
     sharedAt: { type: Date, default: null }, validUntil: { type: String, default: null }, viewToken: { type: String, default: null },
     views: { type: [Date], default: [] }, shares: { type: Schema.Types.Mixed, default: [] },
-    chosenProductId: { type: String, default: null }, linkedQuotationIds: { type: [String], default: [] },
+    chosenProductId: { type: String, default: null }, chosenVariantId: { type: String, default: null }, linkedQuotationIds: { type: [String], default: [] },
     version: { type: Number, default: 1 },
   },
   { timestamps: true, versionKey: false, minimize: false },
@@ -55,7 +59,7 @@ const addDays = (iso: string, n: number) => { const d = new Date(`${iso}T00:00:0
 const view = (c: CqDoc) => ({
   id: c._id, customerId: c.customerId, number: c.number, status: c.status, inputs: c.inputs, options: c.options, recommendedProductId: c.recommendedProductId,
   recommendedReason: c.recommendedReason, snapshot: c.snapshot, pdfFileId: c.pdfFileId, sharedAt: c.sharedAt, validUntil: c.validUntil, viewed: (c.views ?? []).length,
-  chosenProductId: c.chosenProductId, linkedQuotationIds: c.linkedQuotationIds, version: c.version, updatedAt: c.updatedAt,
+  chosenProductId: c.chosenProductId, chosenVariantId: (c as { chosenVariantId?: string | null }).chosenVariantId ?? null, linkedQuotationIds: c.linkedQuotationIds, version: c.version, updatedAt: c.updatedAt,
 });
 async function load(ctx: AuthContext, id: string) {
   const c = await Comparison.findOne({ _id: id, accountId: ctx.accountId }).lean<CqDoc>();
@@ -71,7 +75,7 @@ async function price(ctx: AuthContext, c: Pick<CqDoc, 'customerId' | 'inputs' | 
   const common = c.inputs as Inputs;
   const columns = [];
   for (const o of c.options as Option[]) {
-    const all: Inputs = { ...common, productId: o.productId, riders: o.riders ?? [], override: o.override ?? null, discount: o.discount ?? null, manual: o.manual ?? null };
+    const all: Inputs = { ...common, productId: o.productId, riders: o.riders ?? [], override: o.override ?? null, discount: o.discount ?? null, manual: o.manual ?? null, ...extras(o) };
     const pc = await quotationContext(ctx, { customerId: c.customerId }, { ...all, insurerId: undefined });
     const insurerId = pc.product?.insurerId;
     const ctxFull = await quotationContext(ctx, { customerId: c.customerId }, { ...all, insurerId });
@@ -79,9 +83,12 @@ async function price(ctx: AuthContext, c: Pick<CqDoc, 'customerId' | 'inputs' | 
     const chosen = (common.people ?? []).map((k) => ctxFull.everyone.find((e) => e.key === k)).filter(Boolean) as typeof ctxFull.everyone;
     const out = chosen.filter((p) => p.dob && !(fitsEntryAge(ctxFull.data, ageOn(p.dob), 'ADULT') || (CHILD.test(p.relationship) && fitsEntryAge(ctxFull.data, ageOn(p.dob), 'CHILD'))));
     const covered = chosen.filter((p) => !out.includes(p));
-    const base = { productId: o.productId, name, insurer: ctxFull.insurer?.name ?? null, uin: ctxFull.data.uin ?? null, agentCode: ctxFull.mapping?.agentCode ?? null };
+    const vName = ctxFull.variant && ctxFull.variant.name !== 'Standard' ? ctxFull.variant.name : null;
+    const base = { productId: o.productId, variantId: ctxFull.variant?._id ?? null, variantName: ctxFull.variant?.name ?? null, name: vName ? `${name} · ${vName}` : name, insurer: ctxFull.insurer?.name ?? null, uin: ctxFull.data.uin ?? null, agentCode: ctxFull.mapping?.agentCode ?? null };
     // P-27 checks for this option (steps 1–5 and 7), people/sum insured handled here so a partial cover is labelled, not refused
     const problems = quotationChecks(ctx, ctxFull, { ...all, insurerId, people: covered.map((p) => p.key) }, 5);
+    // typed premium and add-ons are checked like a quotation's steps 7 and 8 (QT-47, QT-48, QT-49)
+    if (!problems.length) { const ii = { ...all, insurerId, people: covered.map((p) => p.key) }; problems.push(...addOnChecks(ctxFull, ii), ...typedBaseChecks(ctxFull, ii)); }
     if (!problems.length && !covered.length) problems.push({ field: 'people', messageId: 'QT-06', params: { Name: out[0]?.name ?? '', age: 0, min: ctxFull.data.adultMin ?? 0, max: ctxFull.data.adultMax ?? 0 } });
     if (problems.length) { const params = { Product: name, reason: msg(problems[0]!.messageId, problems[0]!.params ?? {}) }; columns.push({ ...base, error: { messageId: 'QT-32', message: msg('QT-32', params), params } }); continue; }
     let r: { breakdown: Breakdown; priceVersionId: string | null };
@@ -128,11 +135,11 @@ export async function start(ctx: AuthContext, customerId: string, req: Request) 
 export async function saveDraft(ctx: AuthContext, id: string, b: { version: number; inputs: Inputs; options: Option[]; recommendedProductId?: string | null; recommendedReason?: string | null }) {
   const c = await load(ctx, id);
   if (c.status !== 'DRAFT') throw AppError.invalidState('comparison', c.status);
-  if (b.options.some((o) => o.override || (o.discount && o.discount.value)) && !can(ctx.role, 'quotations.pricing')) throw AppError.forbidden();
+  if (b.options.some((o) => pricingInputs(o as Inputs)) && !can(ctx.role, 'quotations.pricing')) throw AppError.forbidden();
   const seen = new Set<string>();
   for (const o of b.options) {
-    if (seen.has(o.productId)) throw AppError.field('options', 'QT-36', { Product: o.productId });
-    seen.add(o.productId);
+    if (seen.has(optionKey(o))) throw AppError.field('options', 'QT-36', { Product: o.productId });
+    seen.add(optionKey(o));
   }
   const u = await Comparison.findOneAndUpdate({ _id: id, version: b.version, status: 'DRAFT' }, { $set: { inputs: b.inputs, options: b.options, recommendedProductId: b.recommendedProductId ?? null, recommendedReason: b.recommendedReason ?? null }, $inc: { version: 1 } }, { new: true }).lean<CqDoc>();
   if (!u) throw AppError.versionConflict('comparison', view(c));
@@ -242,11 +249,13 @@ export async function publicView(token: string) {
 }
 
 /** Customer chose this (QT-34): PRODUCT_CHOSEN. */
-export async function choose(ctx: AuthContext, id: string, b: { version: number; productId: string }, req: Request) {
+export async function choose(ctx: AuthContext, id: string, b: { version: number; productId: string; variantId?: string | null }, req: Request) {
   const c = await load(ctx, id);
   if (!['SHARED', 'READY', 'PRODUCT_CHOSEN'].includes(c.status)) throw AppError.invalidState('comparison', c.status);
-  if (!(c.options as Option[]).some((o) => o.productId === b.productId)) throw AppError.field('productId', 'VAL-22');
-  const u = await Comparison.findOneAndUpdate({ _id: id, version: b.version }, { $set: { status: 'PRODUCT_CHOSEN', chosenProductId: b.productId }, $inc: { version: 1 } }, { new: true }).lean<CqDoc>();
+  // With variants as separate options, a product offered more than once needs the variant (else the first option)
+  const opt = (c.options as Option[]).find((o) => o.productId === b.productId && (b.variantId === undefined || (o.variantId ?? null) === (b.variantId ?? null)));
+  if (!opt) throw AppError.field(b.variantId ? 'variantId' : 'productId', 'VAL-22');
+  const u = await Comparison.findOneAndUpdate({ _id: id, version: b.version }, { $set: { status: 'PRODUCT_CHOSEN', chosenProductId: b.productId, chosenVariantId: opt.variantId ?? null }, $inc: { version: 1 } }, { new: true }).lean<CqDoc>();
   if (!u) throw AppError.versionConflict('comparison', view(c));
   await audit({ entity: 'comparison', entityId: id, action: 'COMPARISON_PRODUCT_CHOSEN', after: { productId: b.productId } }, { req });
   const name = ((u.snapshot as { columns: Array<{ productId: string; name: string }> }).columns.find((x) => x.productId === b.productId))?.name ?? '';
@@ -260,10 +269,11 @@ export async function choose(ctx: AuthContext, id: string, b: { version: number;
 export async function createQuotation(ctx: AuthContext, id: string, req: Request) {
   const c = await load(ctx, id);
   if (c.status !== 'PRODUCT_CHOSEN' || !c.chosenProductId) throw AppError.invalidState('comparison', c.status);
-  const opt = (c.options as Option[]).find((o) => o.productId === c.chosenProductId)!;
+  const chosenVariant = (c as { chosenVariantId?: string | null }).chosenVariantId ?? null;
+  const opt = (c.options as Option[]).find((o) => o.productId === c.chosenProductId && (o.variantId ?? null) === chosenVariant) ?? (c.options as Option[]).find((o) => o.productId === c.chosenProductId)!;
   const pc = await quotationContext(ctx, { customerId: c.customerId }, { productId: opt.productId });
   const q = await startQuotation(ctx, c.customerId, req);
-  const inputs: Inputs = { ...(c.inputs as Inputs), productId: opt.productId, insurerId: pc.product?.insurerId, riders: opt.riders ?? [], override: opt.override ?? null, discount: opt.discount ?? null, manual: opt.manual ?? null };
+  const inputs: Inputs = { ...(c.inputs as Inputs), productId: opt.productId, insurerId: pc.product?.insurerId, riders: opt.riders ?? [], override: opt.override ?? null, discount: opt.discount ?? null, manual: opt.manual ?? null, ...extras(opt) };
   let saved;
   try { saved = await saveQuotation(ctx, q.id, { version: q.version, step: 8, inputs }, req); }
   catch { saved = quotationView((await Quotation.findById(q.id).lean())!); } // the draft keeps its inputs; P-27 shows what to fix

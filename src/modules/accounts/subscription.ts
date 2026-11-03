@@ -18,5 +18,7 @@ export function effectiveStatus(sub: Stored, now: Date): EffectiveStatus {
 }
 
 /** P-53: assistants need a TRIAL, or an ACTIVE or GRACE Premium subscription. */
+/** Change #6: advisor brochure reading follows the same plan rule as assistants: Premium (and the trial). */
+export const allowsBrochureReading = (status: EffectiveStatus, plan: string | null | undefined) => allowsAssistants(status, plan);
 export const allowsAssistants = (status: EffectiveStatus, plan: string | null | undefined) =>
   status === 'TRIAL' || ((status === 'ACTIVE' || status === 'GRACE') && plan === 'PREMIUM');

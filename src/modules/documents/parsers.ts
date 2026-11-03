@@ -84,6 +84,21 @@ export function parseOldPolicy(text: string): Parsed {
   return out;
 }
 
+/**
+ * Change #48: the IRDAI licence or POSP certificate. Layouts differ by insurer, so only two values are looked for:
+ * a number printed after "Licence / Certificate / Registration / Code No." and a "valid up to" date (YYYY-MM-DD,
+ * as the advisor's profile stores it). Shown to the reviewer beside the typed values; never saved over them.
+ */
+export function parseLicence(text: string): Parsed {
+  const t = text.replace(/\s+/g, ' ');
+  const out: Parsed = {};
+  const num = /\b(?:licen[cs]e|certificate|posp|agent)\s*(?:no\.?|number|code|id)\s*[:.\-]?\s*([A-Z0-9][A-Z0-9/-]{4,29})/i.exec(t);
+  if (num) out.licenceNumber = num[1]!.toUpperCase().replace(/[/-]+$/, '');
+  const valid = /valid(?:ity)?\s*(?:up\s*to|upto|till|until|to|from\s+\S+\s+to)?\s*[:.\-]?\s*(\d{2})[/.-](\d{2})[/.-](\d{4})/i.exec(t);
+  if (valid) out.validUntil = `${valid[3]}-${valid[2]}-${valid[1]}`;
+  return out;
+}
+
 export function parseFor(type: string, text: string): Parsed {
   if (type === 'PAN') return parsePan(text);
   if (type === 'Aadhaar') return parseAadhaar(text);

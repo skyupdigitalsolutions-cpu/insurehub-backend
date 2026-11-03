@@ -1,6 +1,6 @@
 import type { Request } from 'express';
 import { cfgNum } from '../../config/cfg.js';
-import { clock } from '../../lib/clock.js';
+import { clock, istToday } from '../../lib/clock.js';
 import { decryptField, encryptField } from '../../lib/crypto.js';
 import { AppError } from '../../lib/errors.js';
 import { msg } from '../../lib/messages.js';
@@ -8,7 +8,11 @@ import { withTx } from '../../lib/mongo.js';
 import { Account, type AccountDoc } from '../accounts/account.model.js';
 import { audit } from '../audit/audit.service.js';
 import { StoredFile, type FileDoc } from '../files/file.model.js';
-import { assertOwnFile, view as fileView } from '../files/files.service.js';
+import { assertOwnFile, open as openFile, view as fileView } from '../files/files.service.js';
+import { ocrText, readDocument, readerEnabled } from '../documents/reader.js';
+import { parseLicence } from '../documents/parsers.js';
+import { useStepUp } from '../auth/stepUp.js';
+import { logger } from '../../lib/logger.js';
 import { notify } from '../notifications/notifications.service.js';
 import { ensureSectionVersions, refreshCompletion } from '../profile/profile.service.js';
 import type { AuthContext } from '../rbac/capabilities.js';
@@ -18,7 +22,9 @@ import { User } from '../users/user.model.js';
 export const REJECT_REASONS = ['Document unclear', 'Name does not match', 'PAN invalid', 'Licence expired', 'Other'] as const;
 
 export interface SubmitBody { version: number; pan: string; nameOnPan: string; panFileId: string; licenceFileId: string; declaration: true; confirm: string[] }
-export interface DecisionBody { version: number; decision: 'VERIFY' | 'REJECT'; reason?: string | null; note?: string | null }
+export interface DecisionBody { version: number; decision: 'VERIFY' | 'REJECT'; reason?: string | null; note?: string | null; checklist?: KycChecklist | null }
+/** Change #48: the reviewer's four ticks (§9.9: stored with the decision, to confirm). */
+export interface KycChecklist { panReadable: boolean; nameMatches: boolean; licenceValid: boolean; photoClear: boolean }
 
 async function files(ids: Array<string | null | undefined>) {
   const list = await StoredFile.find({ _id: { $in: ids.filter(Boolean) } }).lean<FileDoc[]>();
@@ -121,7 +127,55 @@ export async function submitKyc(ctx: AuthContext, b: SubmitBody, req: Request) {
       before: { status }, after: { status: 'PENDING_REVIEW' } }, { req, session });
     return u;
   });
+  await startKycReading(ctx, acc._id, b.panFileId, b.licenceFileId, updated.profile?.kyc?.submittedAt ?? now, req);
   return { view: await advisorView(updated), messageId: 'PRF-04' as const };
+}
+
+// ── Change #48: read the PAN and licence images for the reviewer ──────────────
+
+/**
+ * Read both images after a submission and keep what was found (encrypted: it holds the PAN) for the review screen.
+ * Never awaited by the submit; only the submission it was started for is written (a newer one starts its own).
+ * No reader set up → OFF; a failure → FAILED: the reviewer compares by eye, nothing else changes.
+ */
+export async function readKycImages(ctx: AuthContext, accountId: string, panFileId: string, licenceFileId: string, submittedAt: Date, req: Request) {
+  const mine = { _id: accountId, 'profile.kyc.submittedAt': submittedAt };
+  try {
+    const [pan, lic] = await Promise.all([openFile(ctx, panFileId, req), openFile(ctx, licenceFileId, req)]);
+    const panRead = await readDocument('PAN', pan.bytes, pan.file.mime);
+    const licText = await ocrText(lic.bytes, lic.file.mime);
+    const values = { pan: panRead?.values.pan ?? null, name: panRead?.values.name ?? null, ...parseLicence(licText) };
+    await Account.updateOne(mine, { $set: { 'profile.kyc.readStatus': 'DONE', 'profile.kyc.readAt': clock.now(), 'profile.kyc.readValuesEnc': encryptField(JSON.stringify(values)) } });
+  } catch (e) {
+    logger.warn({ accountId, reason: (e as Error).message }, 'KYC image reading failed: the reviewer compares by eye');
+    await Account.updateOne(mine, { $set: { 'profile.kyc.readStatus': 'FAILED', 'profile.kyc.readAt': clock.now(), 'profile.kyc.readValuesEnc': null } }).catch(() => undefined);
+  }
+}
+async function startKycReading(ctx: AuthContext, accountId: string, panFileId: string, licenceFileId: string, submittedAt: Date, req: Request) {
+  const enabled = readerEnabled();
+  await Account.updateOne({ _id: accountId }, { $set: { 'profile.kyc.readStatus': enabled ? 'PENDING' : 'OFF', 'profile.kyc.readAt': null, 'profile.kyc.readValuesEnc': null, 'profile.kyc.checklist': null } });
+  if (enabled) setImmediate(() => { void readKycImages(ctx, accountId, panFileId, licenceFileId, submittedAt, req); });
+}
+
+const norm = (s: string | null | undefined) => (s ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+type Result = 'MATCH' | 'MISMATCH' | 'NOT_READ';
+const compare = (typed: string | null, read: string | null): Result => (!read ? 'NOT_READ' : !typed ? 'MISMATCH' : norm(typed) === norm(read) ? 'MATCH' : 'MISMATCH');
+
+/** The review screen's comparison: each typed value beside the value read from the image, with the result. */
+function comparison(acc: AccountDoc) {
+  const k = (acc.profile?.kyc ?? {}) as { panEnc?: string | null; nameOnPan?: string | null; readStatus?: string | null; readValuesEnc?: string | null; readAt?: Date | null };
+  const read = k.readValuesEnc ? (JSON.parse(decryptField(k.readValuesEnc)) as { pan?: string | null; name?: string | null; licenceNumber?: string | null; validUntil?: string | null }) : {};
+  const typedPan = k.panEnc ? decryptField(k.panEnc) : null;
+  const lic = acc.profile?.professional;
+  const until = lic?.licenceValidUntil ?? null;
+  const readUntil = read.validUntil ?? null;
+  return {
+    readStatus: (k.readStatus ?? 'OFF') as 'OFF' | 'PENDING' | 'DONE' | 'FAILED', readAt: k.readAt ?? null,
+    pan: { typed: typedPan, read: read.pan ?? null, result: compare(typedPan, read.pan ?? null) },
+    nameOnPan: { typed: k.nameOnPan ?? null, read: read.name ?? null, result: compare(k.nameOnPan ?? null, read.name ?? null) },
+    licenceNumber: { typed: lic?.licenceNumber ?? null, read: read.licenceNumber ?? null, result: compare(lic?.licenceNumber ?? null, read.licenceNumber ?? null) },
+    licenceValidUntil: { typed: until, read: readUntil, result: (!readUntil ? 'NOT_READ' : until === readUntil ? 'MATCH' : 'MISMATCH') as Result, expired: (until ?? readUntil ?? '9999') < istToday() },
+  };
 }
 
 // ── SkyUp review (STF, ADM) ──────────────────────────────────────────────────
@@ -156,6 +210,8 @@ export async function reviewItem(accountId: string, req: Request) {
     licence: { number: acc.profile?.professional?.licenceNumber ?? null, validUntil: acc.profile?.professional?.licenceValidUntil ?? null, type: acc.profile?.professional?.advisorType ?? null },
     dob: acc.profile?.personal?.dob ?? null,
     rejectReasons: REJECT_REASONS,
+    comparison: comparison(acc), // change #48
+    checklistItems: ['panReadable', 'nameMatches', 'licenceValid', 'photoClear'] as const,
   };
 }
 
@@ -176,6 +232,7 @@ export async function decide(ctx: AuthContext, accountId: string, b: DecisionBod
         $set: {
           'profile.kycStatus': verified ? 'VERIFIED' : 'REJECTED', 'profile.kyc.decidedAt': now, 'profile.kyc.decidedBy': ctx.userId,
           'profile.kyc.rejectReason': verified ? null : b.reason, 'profile.kyc.rejectNote': verified ? null : (b.note ?? null),
+          'profile.kyc.checklist': b.checklist ?? null,
         },
         $inc: { 'profile.sectionVersions.kyc': 1 },
       },
@@ -197,8 +254,9 @@ export async function decide(ctx: AuthContext, accountId: string, b: DecisionBod
       }, session);
       // Email (P-06 step 5) goes through the communications outbox, built with P-39 to P-43.
     }
+    if (verified) await useStepUp(req.stepUpId, 'KYC_VERIFIED', session); // the OTP is used once
     await audit({ entity: 'kyc', entityId: accountId, action: verified ? 'KYC_VERIFIED' : 'KYC_REJECTED',
-      before: { status: 'PENDING_REVIEW' }, after: { status: verified ? 'VERIFIED' : 'REJECTED', reason: b.reason ?? null, note: b.note ?? null } }, { req, session });
+      before: { status: 'PENDING_REVIEW' }, after: { status: verified ? 'VERIFIED' : 'REJECTED', reason: b.reason ?? null, note: b.note ?? null, checklist: b.checklist ?? null }, stepUpId: req.stepUpId }, { req, session });
     return u;
   });
   return { status: out.profile?.kycStatus, messageId: verified ? 'PRF-05' : 'PRF-06' };

@@ -15,6 +15,8 @@ import * as products from './products.service.js';
 import * as prices from './prices.service.js';
 import * as corrections from './corrections.service.js';
 import * as ocr from './ocr.service.js';
+import * as priv from './private.service.js';
+import * as variants from './variants.service.js';
 import { DATA_TYPES, FACTOR_SOURCES, FEATURE_GROUPS } from './types.model.js';
 
 const labels = {
@@ -67,7 +69,8 @@ export function catalogueInsurerRoutes() {
     const out = await ins.reject(req.auth!, String(req.params.id), req.body, req);
     sendDone(res, out.insurer, out.messageId, out.params);
   });
-  r.post('/:id/deactivate', allow('catalogue.approve'), validate({ params: idParam, body: z.object({ version: required(version()), confirm: confirmations() }).strict() }, labels), async (req, res) =>
+  // Change #40 / §9.6: deactivate needs a reason and the OTP
+  r.post('/:id/deactivate', allow('catalogue.approve'), requireStepUp, validate({ params: idParam, body: z.object({ version: required(version()), reason: required(shortText()), confirm: confirmations() }).strict() }, { ...labels, reason: 'Reason' }), async (req, res) =>
     sendDone(res, await ins.setActive(req.auth!, String(req.params.id), req.body, 'INACTIVE', req), 'GEN-08', { 'Record type': 'Insurer' }));
   r.post('/:id/activate', allow('catalogue.approve'), validate({ params: idParam, body: versionBody }, labels), async (req, res) =>
     sendDone(res, await ins.setActive(req.auth!, String(req.params.id), req.body, 'ACTIVE', req), 'GEN-08', { 'Record type': 'Insurer' }));
@@ -161,7 +164,16 @@ export const productData = z.object({
   pricingMode: enumOf(['RATE_TABLE', 'MANUAL_ENTRY'] as const).optional(), taxPercent: percent().optional(),
   nomineeRequired: z.boolean().optional(), maxNominees: wholeNumber(1, () => cfgNum('CFG-53')).optional(), gracePeriodDays: optional(wholeNumber(0, () => 365)),
   brochureFileId: optional(recordId('fil')), sourceLink: optional(webAddress()), sourceCheckedOn: optional(date()),
+  // Change #5: features outside the template (✓/✗ or a short text per variant)
+  customFeatures: z.array(z.object({ key: z.string().regex(/^cf_[a-z0-9_]{1,50}$/).optional(), name: required(shortText()), origin: enumOf(['ADVISOR', 'AI_SUGGESTED', 'SKYUP'] as const).optional(), group: optional(shortText()), dataType: enumOf(['Yes/No', 'Text'] as const).optional() }).strict()).max(50).optional(),
 }).strict();
+const featureValues = z.record(z.string().max(60), z.object({ value: z.union([z.string().max(500), z.number(), z.boolean(), z.null()]).optional(), page: z.number().int().min(1).max(2000).nullable().optional(), notStated: z.boolean().optional(), included: z.boolean().optional() }).strict());
+/** Change #2: one variant (Silver, Gold…): its cover type, sum-insured range inside the product's, and its own values. */
+export const variantInput = z.object({
+  name: required(shortText()), coverType: optional(enumOf(['INDIVIDUAL', 'FLOATER'] as const)),
+  sumInsuredMin: optional(rupees()), sumInsuredMax: optional(rupees()), features: featureValues.optional(),
+}).strict();
+const variantsList = z.array(variantInput).max(50);
 const prdId = z.object({ id: z.string().regex(/^prd_[a-f0-9]{28}$/) });
 const pvId = z.object({ id: z.string().regex(/^pv_[a-f0-9]{28}$/) });
 
@@ -177,7 +189,8 @@ export function adminProductRoutes() {
     const out = await products.adminStartEdit(req.auth!, String(req.params.id), req);
     sendDone(res, out.version, out.messageId, {}, 201);
   });
-  r.post('/:id/withdraw', allow('catalogue.approve'), validate({ params: prdId, body: z.object({ version: required(version()), reason: required(shortText()) }).strict() }, prodLabels), async (req, res) => {
+  // Change #37 / §9.6: withdraw needs the OTP (the reason was already required)
+  r.post('/:id/withdraw', allow('catalogue.approve'), requireStepUp, validate({ params: prdId, body: z.object({ version: required(version()), reason: required(shortText()) }).strict() }, prodLabels), async (req, res) => {
     const out = await products.adminWithdraw(req.auth!, String(req.params.id), req.body, 'WITHDRAWN', req);
     sendDone(res, out, 'CAT-26', { Product: out.name ?? 'The product' });
   });
@@ -191,6 +204,10 @@ export function productVersionRoutes() {
   r.use(authenticate, allow('catalogue.make'));
   r.put('/:id', validate({ params: pvId, body: z.object({ rev: required(version()), data: productData }).strict() }, prodLabels), async (req, res) =>
     sendDone(res, await products.adminSaveDraft(req.auth!, String(req.params.id), req.body, req), 'GEN-08', { 'Record type': 'Product version' }));
+  // Change #2: the draft's variants, replaced as a set
+  r.get('/:id/variants', validate({ params: pvId }), async (req, res) => sendData(res, await variants.variantsOf(String(req.params.id))));
+  r.put('/:id/variants', validate({ params: pvId, body: z.object({ rev: required(version()), variants: variantsList }).strict() }, prodLabels), async (req, res) =>
+    sendDone(res, await products.adminSaveVariants(req.auth!, String(req.params.id), req.body, req), 'GEN-08', { 'Record type': 'Product version' }));
   r.post('/:id/use-current-template', validate({ params: pvId, body: z.object({ rev: required(version()) }).strict() }, prodLabels), async (req, res) =>
     sendDone(res, await products.adminUseCurrentTemplate(req.auth!, String(req.params.id), req.body, req), 'GEN-08', { 'Record type': 'Product version' }));
   r.post('/:id/submit', requireStepUp, validate({ params: pvId, body: z.object({ rev: required(version()) }).strict() }, prodLabels), async (req, res) => {
@@ -238,11 +255,26 @@ export function ownProductRoutes() {
   const r = Router();
   r.use(authenticate, allow('products.own'));
   // Read-only lookups for the + My product form: types with a live template, and that template's features.
-  r.get('/types', async (_req, res) => sendData(res, await types.ownProductTypes()));
-  r.get('/types/:id/template', validate({ params: typeId }), async (req, res) => sendData(res, await types.liveFeatures(String(req.params.id))));
-  r.post('/', writable, validate({ body: z.object({ insurerId: required(recordId('ins')), typeId: required(z.string().regex(/^typ_[a-f0-9]{28}$/)), code: required(code()), data: productData }).strict() }, prodLabels), idempotent(),
+  r.get('/types', async (req, res) => sendData(res, await types.ownProductTypes(req.auth!.accountId)));
+  r.get('/types/:id/template', validate({ params: typeId }), async (req, res) => sendData(res, await types.liveFeatures(String(req.params.id), req.auth!.accountId ?? null)));
+  // Changes #3, #4: step 1 "create a category" and step 2 "add a company", private to this account
+  r.get('/insurers', validate({ query: z.object({ q: z.string().max(100).optional() }) }), async (req, res) => sendData(res, await priv.insurerChoices(req.auth!, (res.locals.query as { q?: string }).q)));
+  r.post('/insurers', writable, validate({ body: z.object({ name: required(shortText()) }).strict() }, { name: 'Company name' }), idempotent(), async (req, res) =>
+    sendDone(res, await priv.addInsurer(req.auth!, req.body, req), 'GEN-08', { 'Record type': 'Company' }, 201));
+  r.post('/types', writable, validate({ body: z.object({ name: required(shortText()) }).strict() }, { name: 'Category name' }), idempotent(), async (req, res) =>
+    sendDone(res, await priv.addCategory(req.auth!, req.body, req), 'GEN-08', { 'Record type': 'Category' }, 201));
+  // Change #6: brochure reading for the advisor (Premium or trial; Normal → CAT-45). Nothing is saved to a product here.
+  const jobId = z.object({ id: z.string().regex(/^ocr_[a-f0-9]{28}$/) });
+  r.post('/brochure-reading', writable, validate({ body: z.object({ typeId: required(z.string().regex(/^typ_[a-f0-9]{28}$/)), fileId: required(recordId('fil')) }).strict() }, { typeId: 'Category', fileId: 'Brochure' }), async (req, res) =>
+    sendDone(res, await ocr.advisorStart(req.auth!, req.body.typeId, req.body.fileId, req), 'OCR-01', { 'CFG-38': cfgNum('CFG-38') }, 202));
+  r.get('/brochure-reading/:id', validate({ params: jobId }), async (req, res) => sendData(res, await ocr.advisorJob(req.auth!, String(req.params.id))));
+  r.put('/brochure-reading/:id/decisions', writable, validate({ params: jobId, body: decisionsBody }), async (req, res) => sendData(res, await ocr.decideAny(req.auth!, String(req.params.id), req.body.decisions)));
+  r.post('/brochure-reading/:id/accept-high', writable, validate({ params: jobId }), async (req, res) => sendData(res, await ocr.acceptHighAny(req.auth!, String(req.params.id))));
+  r.post('/brochure-reading/:id/result', validate({ params: jobId }), async (req, res) => sendData(res, await ocr.advisorResult(req.auth!, String(req.params.id))));
+  r.post('/brochure-reading/:id/retry', writable, validate({ params: jobId }), async (req, res) => sendDone(res, await ocr.retry(req.auth!, String(req.params.id), req), 'OCR-01', { 'CFG-38': cfgNum('CFG-38') }, 202));
+  r.post('/', writable, validate({ body: z.object({ insurerId: required(recordId('ins')), typeId: required(z.string().regex(/^typ_[a-f0-9]{28}$/)), code: required(code()), data: productData, variants: variantsList.optional(), ocrJobId: optional(z.string().regex(/^ocr_[a-f0-9]{28}$/)) }).strict() }, prodLabels), idempotent(),
     async (req, res) => sendDone(res, await products.ownCreate(req.auth!, req.body, req), 'GEN-08', { 'Record type': 'Product' }, 201));
-  r.put('/:id', writable, validate({ params: prdId, body: z.object({ version: required(version()), data: productData }).strict() }, prodLabels), async (req, res) =>
+  r.put('/:id', writable, validate({ params: prdId, body: z.object({ version: required(version()), data: productData, variants: variantsList.optional() }).strict() }, prodLabels), async (req, res) =>
     sendDone(res, await products.ownEdit(req.auth!, String(req.params.id), req.body, req), 'GEN-08', { 'Record type': 'Product' }));
   r.post('/:id/status', writable, validate({ params: prdId, body: z.object({ version: required(version()), status: required(enumOf(['UPCOMING', 'ACTIVE', 'WITHDRAWN'] as const)) }).strict() }, prodLabels), idempotent(), async (req, res) =>
     sendDone(res, await products.ownSetStatus(req.auth!, String(req.params.id), req.body, req), 'GEN-08', { 'Record type': 'Product' }));
@@ -312,12 +344,15 @@ export function correctionRoutes() {
   return r;
 }
 
+/** Decisions on a reading: template features (default), product details, variant names, suggested features (change #6). */
+const decisionsBody = z.object({ decisions: z.array(z.object({ section: enumOf(['FEATURE', 'DETAIL', 'VARIANT', 'SUGGESTION'] as const).optional(), key: z.string().max(60), decision: enumOf(['ACCEPT', 'EDIT', 'IGNORE', 'NOT_STATED'] as const), value: z.string().max(500).nullable().optional() }).strict()).max(300) }).strict();
+
 /** P-23 OCR jobs: decisions, bulk accept above CFG-37, apply to draft, try again. */
 export function ocrJobRoutes() {
   const r = Router();
   r.use(authenticate, allow('catalogue.make'));
   const id = z.object({ id: z.string().regex(/^ocr_[a-f0-9]{28}$/) });
-  r.put('/:id/decisions', validate({ params: id, body: z.object({ decisions: z.array(z.object({ key: z.string().max(60), decision: enumOf(['ACCEPT', 'EDIT', 'IGNORE', 'NOT_STATED'] as const), value: z.string().max(500).nullable().optional() }).strict()).max(300) }).strict() }), async (req, res) =>
+  r.put('/:id/decisions', validate({ params: id, body: decisionsBody }), async (req, res) =>
     sendData(res, await ocr.decide(req.auth!, String(req.params.id), req.body.decisions)));
   r.post('/:id/accept-high', validate({ params: id }), async (req, res) => sendData(res, await ocr.acceptHigh(req.auth!, String(req.params.id))));
   r.post('/:id/apply', validate({ params: id }), async (req, res) => {

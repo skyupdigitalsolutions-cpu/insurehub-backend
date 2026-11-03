@@ -268,6 +268,21 @@ export const MESSAGES = {
   'OCR-07': 'Reading brochures is switched off. Enter values by hand.',
   'OCR-08': 'This value was not found in the brochure. Mark it Not stated, or type it from another source.',
   'CAT-16': 'Minimum must not be more than maximum.',
+  // ── Stage F: catalogue [NOT IN BPD YET: add to Section 21] (changes #2 to #6) ──
+  'CAT-45': 'Reading brochures is part of the Premium plan. Upgrade to have the details filled in for you.',
+  'CAT-46': 'Each variant needs a different name.',
+  'CAT-47': 'A variant\'s sum insured must be within the product\'s range ({min} to {max}).',
+  'CAT-48': 'Products in your own category have no rate table: choose manual entry.',
+  'CAT-49': 'Add up to {n} variants.',
+  'CAT-50': '{name} is already in your list.',
+  'CAT-51': 'Each feature of your own needs a different name.',
+  // ── Stage G: quotations [NOT IN BPD YET: add to Section 21] (changes #2, #8 to #16) ──
+  'QT-45': 'Record the payment before marking this quotation accepted.',
+  'QT-46': '{variant} covers a sum insured from {min} to {max}.',
+  'QT-47': 'Up to {n} add-ons per quotation, including your own.',
+  'QT-48': 'Give each add-on of your own a different name, not the name of a product rider.',
+  'QT-49': 'Type the base premium only when more than one person is covered, or for a renewal, on a product with a rate table.',
+  'QT-50': 'Portability can be requested only when renewing with a different insurer.',
   'CAT-28': 'This product uses an older feature template. Update it to the current template before its next publish.',
   'CAT-30': 'A feature template needs at least one rating factor. Use "Manual entry" pricing for products priced only on the insurer portal.',
   // ── Document vault (P-18) and vehicles (P-54) ──
@@ -421,6 +436,19 @@ export const MESSAGES = {
   'DSH-16': 'New referral from {referrer}: {prospect name}.',
   'REF-02': 'This mobile number already has Bimayantra access. Use a different number.',
   'SUP-03': 'You need a support grant from this advisor to open client details.',
+
+  // ── Stage E2: admin panel [NOT IN BPD YET: add to Section 21] (change analysis §9) ──
+  'ADM-14': 'Type CLOSE to confirm.',
+  'ADM-15': 'Plan changed to {plan} from {date}.',
+  'SUB-18': 'SkyUp changed your plan to {plan} from {date}.',
+  'SUP-04': 'Your support session for {advisor} has ended.',
+  'AGC-01': 'Agent code review saved.',
+  'AGC-02': 'SkyUp has a question about your agent code {code} for {insurer}: {note}',
+  'AGC-03': 'SkyUp removed agent code {code} for {insurer} from your account: {note}',
+  'AGC-04': 'Agent code {code} for {insurer} is saved in {n} accounts and needs review.',
+  'DSH-27': 'A correction to {product} is waiting for review.',
+  'DSH-28': 'Meta rejected the WhatsApp template {name}: {reason}',
+  'DSH-29': '{n} trials end in the next 7 days.',
 } as const;
 
 export type MessageId = keyof typeof MESSAGES;

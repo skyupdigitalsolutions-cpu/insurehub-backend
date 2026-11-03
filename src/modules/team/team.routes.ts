@@ -4,17 +4,18 @@ import { authenticate } from '../../middleware/authenticate.js';
 import { allow, writable } from '../../middleware/authorize.js';
 import { idempotent } from '../../middleware/idempotency.js';
 import { validate } from '../../middleware/validate.js';
-import { enumOf, mobile, personName, required, version } from '../../lib/fields.js';
+import { email, enumOf, mobile, optional, personName, required, version } from '../../lib/fields.js';
 import { sendData, sendDone } from '../../lib/response.js';
 import { requireStepUp } from '../auth/stepUp.js';
 import { ROLE_LABEL } from '../users/user.model.js';
 import * as team from './team.service.js';
 
-const labels = { name: 'Name', mobile: 'Mobile', role: 'Role', version: 'Version' };
+const labels = { name: 'Name', mobile: 'Mobile', role: 'Role', version: 'Version', email: 'Email' };
 const idParam = z.object({ id: z.string().regex(/^usr_[a-f0-9]{28}$/) });
 const versionBody = z.object({ version: required(version()) });
 const personBody = z.object({ name: required(personName()), mobile: required(mobile()) });
-const staffBody = personBody.extend({ role: required(enumOf(['STF', 'ADM'] as const)) });
+// Change #57: optional email on the add-user form; the OTP stays (P-48 step 2, Q121)
+const staffBody = personBody.extend({ role: required(enumOf(['STF', 'ADM'] as const)), email: optional(email()) });
 const roleBody = z.object({ role: required(enumOf(['STF', 'ADM'] as const)), version: required(version()) });
 const id = (p: unknown) => String((p as { id: string }).id);
 

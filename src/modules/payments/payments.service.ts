@@ -1,4 +1,5 @@
 import type { Request } from 'express';
+import { flagOn } from '../flags/flags.js';
 import { cfgBool, cfgList, cfgNum } from '../../config/cfg.js';
 import { clock, istToday } from '../../lib/clock.js';
 import { AppError } from '../../lib/errors.js';
@@ -113,7 +114,8 @@ export async function record(ctx: AuthContext, quotationId: string, b: RecordBod
       const fields = { status: 'PAID', mode: b.mode, amount: b.amount, paymentDate: date, reference: b.reference ?? null, referenceKey, cheque: b.cheque ?? null, differenceReason: b.differenceReason ?? null, receiptFileId: b.receiptFileId ?? null, recordedBy: ctx.userId, recordedAt: clock.now() };
       const awaiting = await Payment.findOneAndUpdate({ quotationId, revision: rev.revision, status: 'AWAITING_PAYMENT' }, { $set: fields }, { new: true, session: session ?? undefined }).lean<PaymentDoc>();
       const p = awaiting ?? (await Payment.create([{ accountId: ctx.accountId, quotationId, revision: rev.revision, insurerId: snap!.insurer.id, ...fields }], { session: session ?? undefined }))[0]!.toObject() as PaymentDoc;
-      if (rev.status === 'SHARED') {
+      // Change #11 (Q2): with the account switch on, recording a payment no longer accepts the quotation
+      if (rev.status === 'SHARED' && !flagOn('payment_skips_auto_accept', ctx.accountId)) {
         const revisions = q.revisions.map((r, i) => (i === q.revisions.length - 1 ? { ...r, status: 'ACCEPTED' } : r));
         await Quotation.updateOne({ _id: quotationId }, { $set: { status: 'ACCEPTED', revisions }, $inc: { version: 1 } }, { session: session ?? undefined });
       }

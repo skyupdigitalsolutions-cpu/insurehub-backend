@@ -18,6 +18,8 @@ const cycleSchema = new Schema(
     remindersPaused: { type: Boolean, default: false },
     contacts: { type: [new Schema({ at: Date, by: String, outcome: String, note: { type: String, default: null } }, { _id: false })], default: [] },
     renewalQuotationId: { type: String, default: null },
+    renewalComparisonId: { type: String, default: null }, // change #14: "Compare options"
+    renewalMode: { type: String, enum: ['SAME_POLICY', 'NEW_QUOTATION', 'COMPARISON', null], default: null },
     renewedBy: { type: Schema.Types.Mixed, default: null }, // { kind: 'POLICY', policyId } or { kind: 'PREMIUM', paymentDate, receipt, amount }
     receiptKey: { type: String, default: null }, // insurer|RECEIPT (PAY-08)
     version: { type: Number, default: 1 },

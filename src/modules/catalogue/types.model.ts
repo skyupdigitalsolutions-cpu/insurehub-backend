@@ -22,7 +22,8 @@ const typeSchema = new Schema(
   },
   { timestamps: true, versionKey: false },
 );
-typeSchema.index({ nameKey: 1 }, { unique: true });
+// Change #4: names unique per owner (SkyUp's categories, or one advisor's private ones)
+typeSchema.index({ ownerAccountId: 1, nameKey: 1 }, { unique: true, name: 'name_per_owner' });
 export type InsuranceTypeDoc = InferSchemaType<typeof typeSchema> & { _id: string };
 export const InsuranceType = model('InsuranceType', typeSchema, 'insurance_types');
 

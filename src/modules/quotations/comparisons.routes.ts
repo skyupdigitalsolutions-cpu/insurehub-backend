@@ -7,18 +7,21 @@ import { validate } from '../../middleware/validate.js';
 import { date, enumOf, optional, required, rupees, shortText, version } from '../../lib/fields.js';
 import { sendData, sendDone } from '../../lib/response.js';
 import * as svc from './comparisons.service.js';
+import { DISCOUNT_PRESETS, pricingExtras } from './quotations.routes.js';
 
 const id = z.object({ id: z.string().regex(/^cq_[a-f0-9]{28}$/) });
 const option = z.object({
   productId: required(z.string().regex(/^prd_[a-f0-9]{28}$/)), riders: z.array(z.string().max(200)).max(50).optional(),
   override: z.object({ amount: required(rupees()), reason: z.string().max(200).default('') }).strict().nullable().optional(),
-  discount: z.object({ kind: required(enumOf(['AMOUNT', 'PERCENT'] as const)), value: z.number().min(0).max(10_000_000), reference: z.string().max(200).default('') }).strict().nullable().optional(),
+  discount: z.object({ kind: required(enumOf(['AMOUNT', 'PERCENT'] as const)), value: z.number().min(0).max(10_000_000), reference: z.string().max(200).default(''), preset: optional(enumOf(DISCOUNT_PRESETS)) }).strict().nullable().optional(),
   manual: z.object({ netPremium: rupees().optional(), taxAmount: rupees({ allowZero: true }).optional() }).strict().nullable().optional(),
+  ...pricingExtras, // change #13: variant, typed premium and add-ons per option
 }).strict();
 const inputs = z.object({
   typeId: z.string().regex(/^typ_[a-f0-9]{28}$/).optional(), people: z.array(z.string().regex(/^[CF]:(cus|fam)_[a-f0-9]{28}$/)).max(20).optional(),
   sumInsured: rupees().optional(), policyTerm: z.number().int().min(1).max(100).optional(), startDate: date().optional(),
   answers: z.record(z.string().max(60), z.union([z.string().max(200), z.number(), z.boolean()])).optional(),
+  renewalOf: z.string().regex(/^pol_[a-f0-9]{28}$/).nullable().optional(), // change #14: a renewal compared across insurers
 }).strict();
 
 /** Comparison quotations (P-30). */
@@ -37,7 +40,7 @@ export function comparisonRoutes() {
   });
   r.post('/:id/share', writable, validate({ params: id, body: z.object({ channel: required(enumOf(['EMAIL', 'WHATSAPP', 'LINK', 'DOWNLOAD'] as const)) }).strict() }), idempotent(), async (req, res) =>
     sendData(res, await svc.share(req.auth!, String(req.params.id), req.body.channel, req)));
-  r.post('/:id/choose', writable, validate({ params: id, body: z.object({ version: required(version()), productId: required(z.string().regex(/^prd_[a-f0-9]{28}$/)) }).strict() }), async (req, res) => {
+  r.post('/:id/choose', writable, validate({ params: id, body: z.object({ version: required(version()), productId: required(z.string().regex(/^prd_[a-f0-9]{28}$/)), variantId: z.string().regex(/^var_[a-f0-9]{28}$/).nullable().optional() }).strict() }), async (req, res) => {
     const out = await svc.choose(req.auth!, String(req.params.id), req.body, req);
     sendDone(res, out.comparison, 'QT-34', out.params);
   });

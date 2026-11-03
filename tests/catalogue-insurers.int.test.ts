@@ -101,11 +101,20 @@ describe('P-20 insurers', () => {
     const adv = await registerAdvisor('Asha Rao');
     const map = await as(adv.token).post('/my-insurers', { insurerId: d.id, agentCode: 'AG-1', declaration: true });
     expect(map.status).toBe(201);
-    const ask = await as(a.token).post(`/admin/insurers/${d.id}/deactivate`, { version: live.version });
+    // Change #40: the OTP and a reason are needed; the token is kept while the CAT-09 confirmation is asked
+    expect(err(await as(a.token).post(`/admin/insurers/${d.id}/deactivate`, { version: live.version, reason: 'Merged' }))).toMatchObject({ status: 403, messageId: 'AUTH-26' });
+    const tok = await stepUp(a.token, a.mobile);
+    expect(fieldIds(await as(a.token).post(`/admin/insurers/${d.id}/deactivate`, { version: live.version }, { 'X-Step-Up-Token': tok }))).toEqual({ reason: 'GEN-01' });
+    const ask = await as(a.token).post(`/admin/insurers/${d.id}/deactivate`, { version: live.version, reason: 'Merged with another insurer' }, { 'X-Step-Up-Token': tok });
     expect(err(ask)).toMatchObject({ status: 409, messageId: 'CAT-09' });
     expect(ask.body.error.message).toBe('Deactivating Alpha General Insurance hides 0 products from new quotations and affects 1 advisors. Existing quotations and policies do not change. Continue?');
-    const off = await as(a.token).post(`/admin/insurers/${d.id}/deactivate`, { version: live.version, confirm: ['CAT-09'] });
+    const off = await as(a.token).post(`/admin/insurers/${d.id}/deactivate`, { version: live.version, reason: 'Merged with another insurer', confirm: ['CAT-09'] }, { 'X-Step-Up-Token': tok });
     expect(off.body.data.status).toBe('INACTIVE');
+    expect((await Insurer.findById(d.id).lean())!.deactivatedReason).toBe('Merged with another insurer');
+    const on = await as(a.token).post(`/admin/insurers/${d.id}/activate`, { version: off.body.data.version }); // activate needs no OTP
+    expect(on.status).toBe(200);
+    expect((await Insurer.findById(d.id).lean())!.deactivatedReason).toBeNull();
+    await as(a.token).post(`/admin/insurers/${d.id}/deactivate`, { version: on.body.data.version, reason: 'Again', confirm: ['CAT-09'] }, { 'X-Step-Up-Token': await stepUp(a.token, a.mobile) });
     expect((await as(adv.token).get('/my-insurers')).body.data[0].warnings[0].messageId).toBe('PRF-10'); // mapping kept, shown blocked
     const other = await registerAdvisor('Ravi Kumar');
     expect(fieldIds(await as(other.token).post('/my-insurers', { insurerId: d.id, agentCode: 'AG-2', declaration: true }))).toEqual({ insurerId: 'VAL-22' });

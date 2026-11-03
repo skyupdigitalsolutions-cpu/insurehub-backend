@@ -78,6 +78,13 @@ const accountSchema = new Schema(
         decidedBy: { type: String, default: null },
         rejectReason: { type: String, default: null },
         rejectNote: { type: String, default: null },
+        // Change #48: what the reader found on the PAN and licence images, shown beside the typed values.
+        // Encrypted JSON (holds the PAN). OFF = no reader set up; FAILED = the reviewer compares by eye.
+        readStatus: { type: String, enum: ['OFF', 'PENDING', 'DONE', 'FAILED', null], default: null },
+        readAt: { type: Date, default: null },
+        readValuesEnc: { type: String, default: null },
+        // The reviewer's four ticks, kept with the decision (§9.9, to confirm): panReadable, nameMatches, licenceValid, photoClear
+        checklist: { type: Schema.Types.Mixed, default: null },
       },
       sectionVersions: {
         personal: { type: Number, default: 1 },

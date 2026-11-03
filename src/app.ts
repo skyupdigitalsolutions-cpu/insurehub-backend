@@ -37,7 +37,7 @@ import './modules/catalogue/variant.model.js';
 import { featureTableRoutes } from './modules/catalogue/featureTable.routes.js';
 import './modules/documents/accountDocType.model.js';
 import { campaignRoutes, hookRoutes, publicFormRoutes, websiteCors } from './modules/campaigns/campaigns.routes.js';
-import { adminRoutes, billingRoutes, exportRoutes, subscriptionWebhookRoutes, supportGrantRoutes, supportUseRoutes } from './modules/admin/admin.routes.js';
+import { adminRoutes, billingRoutes, exportRoutes, skyupGrantRoutes, subscriptionWebhookRoutes, supportGrantRoutes, supportUseRoutes } from './modules/admin/admin.routes.js';
 import { correctionRoutes, ocrJobRoutes, adminProductRoutes, advisorPriceRoutes, referencePriceRoutes, approvalRoutes, catalogueInsurerRoutes, ownProductRoutes, productRoutes, productVersionRoutes, templateRoutes, typeRoutes } from './modules/catalogue/catalogue.routes.js';
 import { devRoutes } from './modules/dev/dev.routes.js';
 import { adminFlagRoutes, flagRoutes } from './modules/flags/flags.routes.js';
@@ -132,6 +132,7 @@ export function createApp() {
   api.use('/billing', billingRoutes());
   api.use('/exports', exportRoutes());
   api.use('/support-grants', supportGrantRoutes());
+  api.use('/admin/support-grants', skyupGrantRoutes()); // change #56 (before the general /admin routes)
   api.use('/support', supportUseRoutes());
   api.use('/admin', adminRoutes());
   api.use('/webhooks/subscription', subscriptionWebhookRoutes());

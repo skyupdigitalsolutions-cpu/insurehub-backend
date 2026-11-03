@@ -14,8 +14,9 @@ const insurerSchema = new Schema(
     _id: { type: String, default: () => newId('ins') },
     name: { type: String, required: true },
     nameKey: { type: String, required: true }, // lowercased: name is unique ignoring case
-    shortCode: { type: String, required: true },
-    category: { type: String, enum: INSURER_CATEGORIES, required: true },
+    // Required for the SkyUp library only: an advisor's private insurer is added by name (change #3).
+    shortCode: { type: String, required: function (this: { ownerAccountId?: string | null }) { return !this.ownerAccountId; }, default: null },
+    category: { type: String, enum: [...INSURER_CATEGORIES, null], required: function (this: { ownerAccountId?: string | null }) { return !this.ownerAccountId; }, default: null },
     /** Change #3: null = the SkyUp IRDAI library; an account ID = that advisor's private insurer (no IRDAI number needed). */
     ownerAccountId: { type: String, default: null },
     irdaiRegNo: { type: String, required: function (this: { ownerAccountId?: string | null }) { return !this.ownerAccountId; }, default: null },
@@ -25,6 +26,8 @@ const insurerSchema = new Schema(
     careEmail: { type: String, default: null },
     logoFileId: { type: String, default: null },
     status: { type: String, enum: INSURER_STATUSES, default: 'DRAFT' },
+    /** Change #40: why SkyUp deactivated it (with the OTP). Cleared on activate. */
+    deactivatedReason: { type: String, default: null },
     /** Maker-checker (P-20): who made the current draft or change; the approver must be someone else (CAT-05). */
     makerId: { type: String, default: null },
     submittedAt: { type: Date, default: null },
@@ -49,8 +52,10 @@ const insurerSchema = new Schema(
   },
   { timestamps: true, versionKey: false },
 );
-insurerSchema.index({ nameKey: 1 }, { unique: true });
-insurerSchema.index({ shortCode: 1 }, { unique: true });
+// Change #3: names are unique per owner (the library, or one advisor's private list), so a private name may match a
+// library one. Short codes exist only in the library.
+insurerSchema.index({ ownerAccountId: 1, nameKey: 1 }, { unique: true, name: 'name_per_owner' });
+insurerSchema.index({ shortCode: 1 }, { unique: true, partialFilterExpression: { shortCode: { $type: 'string' } }, name: 'library_short_code' });
 insurerSchema.index({ status: 1, name: 1 });
 
 export type InsurerDoc = InferSchemaType<typeof insurerSchema> & { _id: string };

@@ -23,7 +23,7 @@ export function bestFitRoutes() {
     const out = await svc.rank(req.auth!, String(req.params.customerId), req.body, req);
     sendData(res, out, 200, { messageId: out.messageId, message: out.message });
   });
-  r.post('/:rankingId/choose', validate({ params: z.object({ customerId: z.string(), rankingId: z.string().regex(/^rnk_[a-f0-9]{28}$/) }), body: z.object({ productId: required(z.string().regex(/^prd_[a-f0-9]{28}$/)) }).strict() }),
-    async (req, res) => sendData(res, await svc.choose(req.auth!, String(req.params.rankingId), req.body.productId)));
+  r.post('/:rankingId/choose', validate({ params: z.object({ customerId: z.string(), rankingId: z.string().regex(/^rnk_[a-f0-9]{28}$/) }), body: z.object({ productId: required(z.string().regex(/^prd_[a-f0-9]{28}$/)), variantId: z.string().regex(/^var_[a-f0-9]{28}$/).nullable().optional() }).strict() }),
+    async (req, res) => sendData(res, await svc.choose(req.auth!, String(req.params.rankingId), req.body.productId, req.body.variantId)));
   return r;
 }

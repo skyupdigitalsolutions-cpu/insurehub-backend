@@ -15,6 +15,8 @@ import { priceOn } from '../catalogue/prices.service.js';
 import { Product, ProductVersion, type ProductDoc, type ProductVersionDoc } from '../catalogue/product.model.js';
 import { effectiveStatus, fitsEntryAge, type ProductData } from '../catalogue/products.service.js';
 import { InsuranceType, TemplateVersion, type TemplateDoc } from '../catalogue/types.model.js';
+import { ProductVariant, defaultVariantFor } from '../catalogue/variant.model.js';
+import { variantsOf, type FeatureValue } from '../catalogue/variants.service.js';
 
 /**
  * P-26 best-fit ranking. Fixed scores from catalogue facts and the advisor's own prices only (no guesswork); every
@@ -37,6 +39,7 @@ const logSchema = new Schema({
   accountId: { type: String, required: true }, userId: { type: String, required: true }, customerId: { type: String, required: true },
   answers: { type: Schema.Types.Mixed, required: true }, results: { type: Schema.Types.Mixed, default: [] },
   chosenProductId: { type: String, default: null },
+  chosenVariantId: { type: String, default: null }, // change #2
 }, { timestamps: true, versionKey: false, minimize: false });
 export const RankingLog = model('RankingLog', logSchema, 'ranking_logs');
 
@@ -124,7 +127,8 @@ export async function rank(ctx: AuthContext, customerId: string, b: RankBody, re
   const ages = people.map((p) => ({ name: p.name, age: ageOn(p.dob!), child: CHILD.test(p.relationship) }));
   const customerAge = c.dob ? ageOn(c.dob) : ages[0]!.age;
 
-  const type = await InsuranceType.findById(b.typeId, { name: 1, status: 1 }).lean<{ name: string; status: string }>();
+  // Change #4: an advisor's private category is not offered in Best fit (it has no SkyUp template to score on)
+  const type = await InsuranceType.findOne({ _id: b.typeId, ownerAccountId: null }, { name: 1, status: 1 }).lean<{ name: string; status: string }>();
   if (!type) throw AppError.field('typeId', 'VAL-22');
   const categories = acc?.profile?.professional?.categories ?? [];
   const mapped = new Set((await InsurerMapping.find({ accountId: ctx.accountId, status: 'ACTIVE' }, { insurerId: 1 }).lean<Array<{ insurerId: string }>>()).map((m) => m.insurerId));
@@ -146,25 +150,33 @@ export async function rank(ctx: AuthContext, customerId: string, b: RankBody, re
     const pr = await premiumFor(ctx.accountId!, p, d, tpl, ages, b.sumInsured, customerAge);
     if ((pr as { noPrice?: boolean }).noPrice) continue; // RATE_TABLE without a current price is not quotable
     const feats = (tpl?.features ?? []) as Array<{ key: string; name: string; dataType: string }>;
-    const fact = (re: RegExp) => { const k = findKey(feats, re); return { f: k ? (d.features?.[k] as Fact) : undefined, dt: feats.find((x) => x.key === k)?.dataType }; };
-    const rr = fact(/room rent/i); const cp = fact(/co-?pay/i); const wt = fact(/pre-?existing.*wait|waiting.*pre-?existing/i); const cs = fact(/claim settlement/i);
-    const parts = {
-      budget: budgetScore(pr.premium, b.budget), roomRent: roomRentScore(rr.f, rr.dt), coPay: coPayScore(cp.f),
-      waiting: waitingScore(wt.f, wt.dt), claimRatio: claimScore(cs.f),
-    };
-    const total = Math.round(PARTS.reduce((t, k, i) => t + parts[k].score * w[i]!, 0) / w.reduce((a, x) => a + x, 0) * 10) / 10;
-    // Each person against the adult and child bands (AC-P26-3).
-    const out = ages.filter((a) => !(fitsEntryAge(d, a.age, 'ADULT') || (a.child && fitsEntryAge(d, a.age, 'CHILD'))));
-    const covers = ages.length - out.length;
-    results.push({
-      productId: p._id, kind: p.kind, name: d.name ?? p.name ?? p.code, insurer: activeInsurers.get(p.insurerId), premium: pr.premium, priceVersionId: pr.priceVersionId,
-      total, parts, covers, of: ages.length,
-      ...(out.length ? { coverage: { messageId: 'QT-41', message: msg('QT-41', { n: covers, m: ages.length, names: out.map((o) => o.name).join(', ') }) } } : {}),
-    });
+    // Change #2: each variant is ranked on its own values (merged over the product's); a variant whose sum-insured
+    // range does not include the answer is left out. Price, ages and terms belong to the product (Q4 default).
+    if (!(await ProductVariant.exists({ productVersionId: v._id }))) await defaultVariantFor(v as never);
+    const vars = await variantsOf(v._id, (d.features ?? {}) as Record<string, FeatureValue>);
+    for (const vr of vars) {
+      if ((vr.sumInsuredMin !== null && b.sumInsured < vr.sumInsuredMin) || (vr.sumInsuredMax !== null && b.sumInsured > vr.sumInsuredMax)) continue;
+      const fact = (re: RegExp) => { const k = findKey(feats, re); return { f: k ? (vr.features[k] as Fact) : undefined, dt: feats.find((x) => x.key === k)?.dataType }; };
+      const rr = fact(/room rent/i); const cp = fact(/co-?pay/i); const wt = fact(/pre-?existing.*wait|waiting.*pre-?existing/i); const cs = fact(/claim settlement/i);
+      const parts = {
+        budget: budgetScore(pr.premium, b.budget), roomRent: roomRentScore(rr.f, rr.dt), coPay: coPayScore(cp.f),
+        waiting: waitingScore(wt.f, wt.dt), claimRatio: claimScore(cs.f),
+      };
+      const total = Math.round(PARTS.reduce((t, k, i) => t + parts[k].score * w[i]!, 0) / w.reduce((a, x) => a + x, 0) * 10) / 10;
+      // Each person against the adult and child bands (AC-P26-3).
+      const out = ages.filter((a) => !(fitsEntryAge(d, a.age, 'ADULT') || (a.child && fitsEntryAge(d, a.age, 'CHILD'))));
+      const covers = ages.length - out.length;
+      const base = d.name ?? p.name ?? p.code;
+      results.push({
+        productId: p._id, variantId: vr.id, variantName: vr.name, kind: p.kind, name: vars.length > 1 ? `${base} · ${vr.name}` : base, insurer: activeInsurers.get(p.insurerId), premium: pr.premium, priceVersionId: pr.priceVersionId,
+        total, parts, covers, of: ages.length,
+        ...(out.length ? { coverage: { messageId: 'QT-41', message: msg('QT-41', { n: covers, m: ages.length, names: out.map((o) => o.name).join(', ') }) } } : {}),
+      });
+    }
   }
   // Full coverage first, then the total, then the lower premium.
   results.sort((x, y) => (Number(y.covers === y.of) - Number(x.covers === x.of)) || (y.total - x.total) || ((x.premium ?? Infinity) - (y.premium ?? Infinity)));
-  const log = await RankingLog.create({ accountId: ctx.accountId, userId: ctx.userId, customerId, answers: b, results: results.map((r) => ({ productId: r.productId, total: r.total, parts: Object.fromEntries(PARTS.map((k) => [k, r.parts[k].score])), covers: r.covers })) });
+  const log = await RankingLog.create({ accountId: ctx.accountId, userId: ctx.userId, customerId, answers: b, results: results.map((r) => ({ productId: r.productId, variantId: r.variantId, total: r.total, parts: Object.fromEntries(PARTS.map((k) => [k, r.parts[k].score])), covers: r.covers })) });
   await audit({ entity: 'customer', entityId: customerId, action: 'BEST_FIT_RANKED', after: { rankingId: log._id, typeId: b.typeId, products: results.length } }, { req });
   const message = results.length ? { messageId: 'FIT-03', message: msg('FIT-03', { n: results.length }) } : { messageId: 'FIT-02', message: msg('FIT-02') };
   // AI summary (CFG-101): no AI service is connected yet, so the scores stand alone (FIT-05). It could never reorder.
@@ -188,8 +200,8 @@ export async function options(ctx: AuthContext, customerId: string, typeId: stri
 }
 
 /** The advisor chose a product from the ranking (kept in the log). */
-export async function choose(ctx: AuthContext, rankingId: string, productId: string) {
-  const u = await RankingLog.findOneAndUpdate({ _id: rankingId, accountId: ctx.accountId }, { $set: { chosenProductId: productId } }, { new: true }).lean();
+export async function choose(ctx: AuthContext, rankingId: string, productId: string, variantId?: string | null) {
+  const u = await RankingLog.findOneAndUpdate({ _id: rankingId, accountId: ctx.accountId }, { $set: { chosenProductId: productId, chosenVariantId: variantId ?? null } }, { new: true }).lean();
   if (!u) throw AppError.notFound();
-  return { rankingId, chosenProductId: productId };
+  return { rankingId, chosenProductId: productId, chosenVariantId: variantId ?? null };
 }

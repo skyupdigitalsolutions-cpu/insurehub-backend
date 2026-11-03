@@ -134,11 +134,12 @@ describe('P-22 / P-25 verified products', () => {
     const adv = await registerAdvisor('Asha Rao');
     const { productId } = await submitted(staff, cat);
     const p = (await as(a.token).get(`/admin/products/${productId}`)).body.data;
-    const w = await as(a.token).post(`/admin/products/${productId}/withdraw`, { version: p.version, reason: 'Insurer stopped selling it' });
+    expect(err(await as(a.token).post(`/admin/products/${productId}/withdraw`, { version: p.version, reason: 'Insurer stopped selling it' }))).toMatchObject({ status: 403, messageId: 'AUTH-26' }); // §9.6: OTP
+    const w = await decide(a, `/admin/products/${productId}/withdraw`, { version: p.version, reason: 'Insurer stopped selling it' });
     expect(w.body.meta.message).toBe('Family Shield is withdrawn. Advisors can no longer quote it.');
     expect((await as(adv.token).get('/products?quotable=true')).body.data).toEqual([]);
     expect((await as(adv.token).get('/products')).body.data[0]).toMatchObject({ status: 'WITHDRAWN', quotable: false, renewalOnly: true });
-    expect(err(await as(staff.token).post(`/admin/products/${productId}/withdraw`, { version: w.body.data.version, reason: 'x' }))).toMatchObject({ status: 403 });
+    expect(err(await decide(staff, `/admin/products/${productId}/withdraw`, { version: w.body.data.version, reason: 'x' }))).toMatchObject({ status: 403 });
     await as(a.token).post(`/admin/products/${productId}/make-available`, { version: w.body.data.version });
     expect((await as(adv.token).get('/products?quotable=true')).body.data).toHaveLength(1);
   });

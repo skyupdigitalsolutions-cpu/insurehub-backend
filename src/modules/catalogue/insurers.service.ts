@@ -23,7 +23,8 @@ const valuesOf = (d: InsurerDoc): Values => pick(d as unknown as Record<string, 
 /** CAT-06 (name, ignoring case) and CAT-07 (code), against every other insurer. */
 async function assertUnique(v: Partial<Values>, exceptId?: string) {
   const not = exceptId ? { _id: { $ne: exceptId } } : {};
-  if (v.name && (await Insurer.exists({ nameKey: v.name.toLowerCase(), ...not }))) throw AppError.field('name', 'CAT-06');
+  // The SkyUp library only: an advisor's private insurer may carry the same name (change #3)
+  if (v.name && (await Insurer.exists({ nameKey: v.name.toLowerCase(), ownerAccountId: null, ...not }))) throw AppError.field('name', 'CAT-06');
   if (v.shortCode && (await Insurer.exists({ shortCode: v.shortCode, ...not }))) throw AppError.field('shortCode', 'CAT-07');
 }
 const dupToField = (e: unknown): never => {
@@ -52,7 +53,7 @@ async function load(id: string) {
 }
 
 export async function list(q?: string, status?: string) {
-  const f: Record<string, unknown> = {};
+  const f: Record<string, unknown> = { ownerAccountId: null }; // the SkyUp library: advisors' private insurers never show here
   if (status) f.status = status;
   if (q) f.$or = [{ name: { $regex: q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' } }, { shortCode: q.toUpperCase() }];
   return (await Insurer.find(f).sort({ name: 1 }).limit(500).lean<InsurerDoc[]>()).map((d) => view(d));
@@ -185,7 +186,7 @@ async function impact(id: string) {
  * Deactivate (ADM): CAT-09 shows the impact; on confirm the insurer becomes INACTIVE. Mappings, products,
  * quotations and policies are untouched; new quotations (P-27) and new mappings (P-07) are blocked.
  */
-export async function setActive(ctx: AuthContext, id: string, b: { version: number; confirm?: string[] }, to: 'ACTIVE' | 'INACTIVE', req: Request) {
+export async function setActive(ctx: AuthContext, id: string, b: { version: number; confirm?: string[]; reason?: string | null }, to: 'ACTIVE' | 'INACTIVE', req: Request) {
   const d = await load(id);
   const from = to === 'INACTIVE' ? 'ACTIVE' : 'INACTIVE';
   if (d.status !== from) throw AppError.invalidState('insurer', d.status.replace('_', ' '));
@@ -194,9 +195,10 @@ export async function setActive(ctx: AuthContext, id: string, b: { version: numb
     const params = { name: d.name, n: i.products, m: i.advisors };
     throw new AppError(409, 'CONFIRMATION_REQUIRED', 'CAT-09', params, { warnings: [{ messageId: 'CAT-09', message: msg('CAT-09', params) }], impact: i });
   }
-  const u = await Insurer.findOneAndUpdate({ _id: id, version: b.version, status: from }, { $set: { status: to }, $inc: { version: 1 } }, { new: true }).lean<InsurerDoc>();
+  const u = await Insurer.findOneAndUpdate({ _id: id, version: b.version, status: from }, { $set: { status: to, deactivatedReason: to === 'INACTIVE' ? b.reason ?? null : null }, $inc: { version: 1 } }, { new: true }).lean<InsurerDoc>();
   if (!u) throw AppError.versionConflict('insurer', view(await load(id), ctx));
-  await audit({ entity: 'insurer', entityId: id, action: to === 'INACTIVE' ? 'INSURER_DEACTIVATED' : 'INSURER_ACTIVATED', before: { status: from }, after: { status: to } }, { req });
+  if (to === 'INACTIVE') await useStepUp(req.stepUpId, 'INSURER_DEACTIVATED', null);
+  await audit({ entity: 'insurer', entityId: id, action: to === 'INACTIVE' ? 'INSURER_DEACTIVATED' : 'INSURER_ACTIVATED', before: { status: from }, after: { status: to, reason: b.reason ?? null }, stepUpId: to === 'INACTIVE' ? req.stepUpId : null }, { req });
   return view(u, ctx);
 }
 

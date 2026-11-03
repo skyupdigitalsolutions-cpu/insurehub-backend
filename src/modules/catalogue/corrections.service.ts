@@ -7,7 +7,7 @@ import { newId } from '../../lib/ids.js';
 import { isDuplicateKey, withTx } from '../../lib/mongo.js';
 import { audit } from '../audit/audit.service.js';
 import { assertOwnFile } from '../files/files.service.js';
-import { notify } from '../notifications/notifications.service.js';
+import { notify, notifySkyUp } from '../notifications/notifications.service.js';
 import type { AuthContext } from '../rbac/capabilities.js';
 import { Product, ProductVersion, type ProductDoc, type ProductVersionDoc } from './product.model.js';
 import { TemplateVersion, type TemplateDoc } from './types.model.js';
@@ -86,6 +86,9 @@ export async function suggest(ctx: AuthContext, productId: string, b: { field: s
   try {
     const c = await Correction.create({ accountId: ctx.accountId, userId: ctx.userId, productId, versionId: v._id, field: b.field, currentValue: getAt(v.data as Record<string, unknown>, b.field), proposedValue: b.proposedValue, reason: b.reason, attachmentFileId: b.attachmentFileId ?? null });
     await audit({ entity: 'correction', entityId: c._id, action: 'CORRECTION_SUBMITTED', after: { productId, field: b.field } }, { req });
+    // Change #60 / §9.6: SkyUp is told a correction is waiting (once per correction)
+    const pName = (v.data as { name?: string }).name ?? 'a product';
+    await notifySkyUp({ kind: 'CORRECTION_SUBMITTED', messageId: 'DSH-27', params: { product: pName }, dedupeKey: `DSH-27|${c._id}`, link: { type: 'CORRECTION', id: c._id } }).catch(() => undefined);
     return view(c.toObject() as CorrectionDoc);
   } catch (e) {
     if (isDuplicateKey(e)) throw new AppError(409, 'INVALID_STATE', 'CAT-08');

@@ -160,7 +160,7 @@ export async function getProfile(ctx: AuthContext) {
 /** Categories an advisor may authorise: the starting types (CFG-115) and every ACTIVE insurance type in the catalogue. */
 export async function categoryChoices() {
   const { InsuranceType } = await import('../catalogue/types.model.js');
-  const active = (await InsuranceType.find({ status: 'ACTIVE' }, { name: 1 }).sort({ name: 1 }).lean<Array<{ name: string }>>()).map((t) => t.name);
+  const active = (await InsuranceType.find({ status: 'ACTIVE', ownerAccountId: null }, { name: 1 }).sort({ name: 1 }).lean<Array<{ name: string }>>()).map((t) => t.name);
   return [...new Set([...cfgList('CFG-115'), ...active])];
 }
 
