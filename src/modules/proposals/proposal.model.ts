@@ -1,3 +1,4 @@
+import { protect } from '../../lib/pii.js';
 import { Schema, model, type InferSchemaType } from 'mongoose';
 import { newId } from '../../lib/ids.js';
 
@@ -32,3 +33,4 @@ proposalSchema.index({ quotationId: 1 }, { unique: true, partialFilterExpression
 proposalSchema.index({ accountId: 1, number: 1 }, { unique: true });
 export type ProposalDoc = InferSchemaType<typeof proposalSchema> & { _id: string; updatedAt: Date };
 export const Proposal = model('Proposal', proposalSchema, 'proposals');
+protect(Proposal, { fields: { members: 'json', declarations: 'json', nominees: 'json' } });

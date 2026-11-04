@@ -1,3 +1,4 @@
+import { protect } from '../../lib/pii.js';
 import { Schema, model, type InferSchemaType } from 'mongoose';
 import { newId } from '../../lib/ids.js';
 
@@ -49,3 +50,5 @@ quotationSchema.index({ accountId: 1, customerId: 1, updatedAt: -1 });
 quotationSchema.index({ 'revisions.viewToken': 1 }, { sparse: true });
 export type QuotationDoc = InferSchemaType<typeof quotationSchema> & { _id: string; createdAt: Date; updatedAt: Date };
 export const Quotation = model('Quotation', quotationSchema, 'quotations');
+/** The frozen snapshot names the customer and insured people; share recipients are mobiles or emails. */
+protect(Quotation, { fields: { 'revisions.snapshot': 'json', 'revisions.shares.to': 'contact' } });

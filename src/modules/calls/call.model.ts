@@ -1,3 +1,4 @@
+import { protect } from '../../lib/pii.js';
 import { Schema, model, type InferSchemaType } from 'mongoose';
 import { newId } from '../../lib/ids.js';
 
@@ -44,3 +45,4 @@ callSchema.index({ accountId: 1, customerId: 1, at: -1 });
 callSchema.index({ accountId: 1, userId: 1, at: -1 });
 export type CallDoc = InferSchemaType<typeof callSchema> & { _id: string; createdAt: Date };
 export const Call = model('Call', callSchema, 'calls');
+protect(Call, { fields: { phone: 'mobile', 'recordings.name': 'text' } });

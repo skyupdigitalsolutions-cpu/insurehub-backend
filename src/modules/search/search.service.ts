@@ -1,6 +1,7 @@
 import { cfgNum } from '../../config/cfg.js';
 import { AppError } from '../../lib/errors.js';
 import { msg } from '../../lib/messages.js';
+import { piiSearch } from '../../lib/pii.js';
 import { Customer, FamilyMember } from '../customers/customer.model.js';
 import { Lead } from '../leads/lead.model.js';
 import type { AuthContext } from '../rbac/capabilities.js';
@@ -8,9 +9,10 @@ import type { AuthContext } from '../rbac/capabilities.js';
 const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 /**
- * Global search (P-09). Only inside the advisor's account. Matches any part of a name (ignoring case), an
- * email, a reference number (LD-, CU-; QT-, CQ-, PL- arrive with their modules), and CFG-132+ digits anywhere
- * in a mobile number (stored as +91XXXXXXXXXX). Inactive records are included and labelled with their status.
+ * Global search (P-09). Only inside the advisor's account. Names, emails and mobiles are encrypted, so they match
+ * through keyed search tokens (lib/pii.ts): every typed word starts a word of the name (ignoring case and accents),
+ * the start of an email or its domain, or CFG-132+ digits anywhere in a mobile number. Reference numbers (LD-,
+ * CU-; QT-, CQ-, PL- arrive with their modules) are plain and match anywhere. Inactive records are included.
  * Results come in the P-09 group order, up to CFG-25 in total.
  */
 export async function search(ctx: AuthContext, raw: string) {
@@ -20,15 +22,13 @@ export async function search(ctx: AuthContext, raw: string) {
   const total = cfgNum('CFG-25');
   const acc = { accountId: ctx.accountId };
   const like = new RegExp(escape(text), 'i');
-  const digits = text.replace(/[\s-]/g, '');
-  const mobile = /^\+?\d+$/.test(digits) && digits.replace(/^\+/, '').length >= cfgNum('CFG-132')
-    ? [{ mobile: new RegExp(escape(digits.replace(/^\+/, ''))) }] : [];
-  const anyOf = (extra: object[] = []) => ({ $or: [{ name: like }, { email: like }, { number: like }, ...mobile, ...extra] });
+  const minDigits = cfgNum('CFG-132');
+  const anyOf = () => ({ $or: [{ number: like }, ...piiSearch(text, { name: true, email: true, mobile: minDigits })] });
 
   const [leads, customers, family] = await Promise.all([
     Lead.find({ ...acc, ...anyOf() }, { number: 1, name: 1, mobile: 1, status: 1 }).sort({ updatedAt: -1 }).limit(total + 1).lean(),
     Customer.find({ ...acc, ...anyOf() }, { number: 1, name: 1, mobile: 1, status: 1 }).sort({ updatedAt: -1 }).limit(total + 1).lean(),
-    FamilyMember.find({ ...acc, $or: [{ name: like }, ...mobile] }, { name: 1, relationship: 1, customerId: 1, status: 1 }).limit(total + 1).lean(),
+    FamilyMember.find({ ...acc, $or: piiSearch(text, { name: true, mobile: minDigits }).concat([{ _id: null }]) }, { name: 1, relationship: 1, customerId: 1, status: 1 }).limit(total + 1).lean(),
   ]);
   const familyCustomers = new Map((await Customer.find({ _id: { $in: family.map((f) => f.customerId) }, ...acc }, { name: 1, number: 1 }).lean()).map((c) => [c._id, c]));
 

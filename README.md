@@ -38,13 +38,48 @@ warning); production refuses to start without one. To convert the local Windows 
 ## Tests
 
 ```bash
-npm test     # 338 tests: unit + integration on a real MongoDB replica set (mongodb-memory-server) and in-memory Redis
+npm test     # 410 tests: unit + integration on a real MongoDB replica set (mongodb-memory-server) and in-memory Redis
 TEST_NO_TX=1 npm test   # the same suite as on a standalone MongoDB (no transactions)
 ```
 
 mongodb-memory-server downloads MongoDB on first run; set `MONGOMS_SYSTEM_BINARY` to use an installed `mongod`
 (for example where fastdl.mongodb.org is blocked: `micromamba create -p ./mongoenv -c conda-forge mongodb`, then
 `MONGOMS_SYSTEM_BINARY=./mongoenv/bin/mongod npm test`).
+
+## Personal data at rest
+
+Names, mobiles, emails and KYC values are encrypted in MongoDB, field by field, so someone with database access sees
+only ciphertext. The API decrypts them and returns plain values; clients change nothing. See `src/lib/pii.ts`.
+
+| Data | How it is stored |
+|---|---|
+| PAN and Aadhaar | Encrypted (AES-256-GCM, random IV), hidden from queries by default, plus a keyed hash for duplicate checks and a masked copy (XXXXXX1234) for display |
+| Names, mobiles, emails (customers, family, leads, users, referral submissions, advisor contact) | Encrypted, deterministic AES-256-GCM: the same value gives the same ciphertext, so sign-in by mobile, duplicate checks and unique rules work. Searched through keyed tokens in `searchIndex` |
+| KYC values (name on PAN, licence number, reject note; values read from images) | Encrypted |
+| Copies: consents, outbox, calls, OTP challenges and locks, notifications, campaign form answers, idempotency responses, audit snapshots, policy insured and nominees, proposals, quotation snapshots and share recipients | Encrypted |
+| Meta, LinkedIn and Google tokens | Encrypted |
+| Campaign keys, sign-in tokens, file checksums, referral IPs, OTPs | Hashed |
+
+Keys: `PII_ENCRYPTION_KEY` (encryption) and `PII_HASH_KEY` (search tokens and lookup hashes); separate keys are derived
+from each with HKDF. Losing them makes the data unreadable: keep them in the key service and back them up.
+
+Rules for code:
+- Query encrypted fields by exact value only (`{ mobile }`, `$in`, `$ne`, `null`, `$exists`); the layer encrypts the
+  value for you. A regex on an encrypted field throws `PiiQueryError`. For search boxes use `piiSearch(text, …)`:
+  names match when each typed word starts a word of the name, emails by the start of the address or its domain,
+  mobiles by CFG-132+ digits anywhere.
+- Do not sort in the database by an encrypted field; sort after reading.
+- Fields stored as encrypted JSON (`json` kind) are written whole; an update inside one (`'frozen.x'`) throws.
+- A new model that holds personal data calls `protect(Model, { fields, search })` after `model(...)`.
+
+Upgrading a database that has plain-text rows (take a backup first; run in a maintenance window, because lookups and
+search do not find plain rows until they are migrated):
+
+```bash
+npm run db:migrate:encrypt-pii             # dry run: counts per collection
+npm run db:migrate:encrypt-pii -- --apply  # encrypt; safe to run again
+npm run db:indexes                         # search-token indexes
+```
 
 ## Conventions every client must follow
 
@@ -82,7 +117,7 @@ mongodb-memory-server downloads MongoDB on first run; set `MONGOMS_SYSTEM_BINARY
 src/
   config/      env.ts (infrastructure only), cfg.ts (every CFG value with its documented default)
   lib/         messages.ts (Section 21 catalogue), fields.ts (Section 2A validators), errors, response, clock (IST, test clock),
-               phone (FLD-01), crypto (PII encryption, OTP hashing), mongo (transactions), pagination, rateCounter, logger, redis
+               phone (FLD-01), crypto (PII encryption, OTP hashing), pii (field encryption layer, search tokens), mongo (transactions), pagination, rateCounter, logger, redis
   middleware/  authenticate (cookie/Bearer, per-request session checks, CFG-99), authorize (3.2 matrix, read-only),
                idempotency, validate, errorHandler, requestId
   modules/     accounts, auth (OTP, sessions, step-up, SMS), rbac, users, team, leads, tasks, customers (customers, family,

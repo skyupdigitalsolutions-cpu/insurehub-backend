@@ -8,6 +8,7 @@ import { masks, nameKey } from '../../lib/fields.js';
 import { msg, type MessageId, type MessageParams } from '../../lib/messages.js';
 import { isDuplicateKey, withTx } from '../../lib/mongo.js';
 import { escapeRegex, pageMeta, pageSize } from '../../lib/pagination.js';
+import { piiSearch } from '../../lib/pii.js';
 import { accountOf } from '../../middleware/authorize.js';
 import { nextNumber } from '../accounts/numbers.js';
 import { audit } from '../audit/audit.service.js';
@@ -139,9 +140,8 @@ export async function listCustomers(ctx: AuthContext, q: { page: number; limit?:
   const filter: Record<string, unknown> = { accountId: accountOf(ctx) };
   if (q.status) filter.status = q.status;
   if (q.search) {
-    const digits = q.search.replace(/\D/g, '');
-    const rx = new RegExp(escapeRegex(q.search), 'i');
-    filter.$or = [{ name: rx }, { number: rx }, { email: rx }, ...(digits.length >= 4 ? [{ mobile: new RegExp(escapeRegex(digits)) }] : [])];
+    // Name, email and mobile are encrypted: they match through keyed search tokens (lib/pii.ts); the number is plain.
+    filter.$or = [{ number: new RegExp(escapeRegex(q.search), 'i') }, ...piiSearch(q.search, { name: true, email: true, mobile: 4 })];
   }
   const limit = pageSize(q.limit);
   const [items, total] = await Promise.all([

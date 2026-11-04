@@ -1,3 +1,4 @@
+import { protect } from '../../lib/pii.js';
 import { Schema, model, type InferSchemaType } from 'mongoose';
 import { newId } from '../../lib/ids.js';
 
@@ -30,3 +31,5 @@ notificationSchema.index({ createdAt: 1 });
 
 export type NotificationDoc = InferSchemaType<typeof notificationSchema> & { _id: string; createdAt: Date };
 export const Notification = model('Notification', notificationSchema, 'notifications');
+/** The resolved wording names people and some dedupe keys hold a mobile: both encrypted (lib/pii.ts). */
+protect(Notification, { fields: { message: 'text', dedupeKey: 'key' } });

@@ -1,12 +1,16 @@
 import { Schema, model, type InferSchemaType } from 'mongoose';
 import { newId } from '../../lib/ids.js';
 import { STORED_MOBILE } from '../../lib/phone.js';
+import { protect, searchIndexFields } from '../../lib/pii.js';
 
 export const GENDERS = ['MALE', 'FEMALE', 'TRANSGENDER', 'PREFER_NOT_TO_SAY'] as const;
 export const PREFERRED_CONTACTS = ['WHATSAPP', 'PHONE_CALL', 'EMAIL'] as const;
 export const DEACTIVATION_REASONS = ['Moved to another advisor', 'Not reachable', 'Deceased', 'Duplicate record', 'Other'] as const;
 
-/** Customer (P-15). PAN and Aadhaar are encrypted field by field and never selected unless asked for (GR-36). */
+/**
+ * Customer (P-15). PAN and Aadhaar are encrypted field by field and never selected unless asked for (GR-36).
+ * Name, mobiles and email are encrypted too (lib/pii.ts); searchIndex holds the keyed search tokens.
+ */
 const customerSchema = new Schema(
   {
     _id: { type: String, default: () => newId('cus') },
@@ -49,15 +53,23 @@ const customerSchema = new Schema(
   },
   { timestamps: true, versionKey: false },
 );
+customerSchema.add(searchIndexFields('name', 'mobile', 'email'));
 customerSchema.index({ accountId: 1, number: 1 }, { unique: true });
 // Exact duplicate = same name and mobile as an ACTIVE customer (Section 7 rule, P-15).
 customerSchema.index({ accountId: 1, mobile: 1, nameKey: 1 }, { unique: true, partialFilterExpression: { status: 'ACTIVE' }, name: 'active_customer_exact_dup' });
 customerSchema.index({ accountId: 1, createdAt: -1 });
 customerSchema.index({ accountId: 1, mobile: 1 });
 customerSchema.index({ accountId: 1, 'identity.panHash': 1 });
+customerSchema.index({ accountId: 1, 'searchIndex.name': 1 });
+customerSchema.index({ accountId: 1, 'searchIndex.mobile': 1 });
+customerSchema.index({ accountId: 1, 'searchIndex.email': 1 });
 
 export type CustomerDoc = InferSchemaType<typeof customerSchema> & { _id: string; createdAt: Date; updatedAt: Date };
 export const Customer = model('Customer', customerSchema, 'customers');
+protect(Customer, {
+  fields: { name: 'name', nameKey: 'nameKey', mobile: 'mobile', altMobile: 'mobile', email: 'email' },
+  search: { name: 'name', mobile: 'mobile', email: 'email' },
+});
 
 /** Household roster (P-16). A member never becomes a nominee or insured person automatically. */
 const familySchema = new Schema(
@@ -79,10 +91,14 @@ const familySchema = new Schema(
   },
   { timestamps: true, versionKey: false },
 );
+familySchema.add(searchIndexFields('name', 'mobile'));
+familySchema.index({ accountId: 1, 'searchIndex.name': 1 });
+familySchema.index({ accountId: 1, 'searchIndex.mobile': 1 });
 familySchema.index({ customerId: 1, nameKey: 1, relationship: 1 }, { unique: true, partialFilterExpression: { status: 'ACTIVE' }, name: 'active_member_dup' });
 familySchema.index({ accountId: 1, customerId: 1, status: 1 });
 export type FamilyDoc = InferSchemaType<typeof familySchema> & { _id: string; createdAt: Date; updatedAt: Date };
 export const FamilyMember = model('FamilyMember', familySchema, 'family_members');
+protect(FamilyMember, { fields: { name: 'name', nameKey: 'nameKey', mobile: 'mobile', email: 'email' }, search: { name: 'name', mobile: 'mobile' } });
 
 export const CONSENT_CHANNELS = ['WHATSAPP', 'EMAIL', 'SMS', 'PERSONAL_DATA'] as const;
 export type ConsentChannel = (typeof CONSENT_CHANNELS)[number];
@@ -131,3 +147,5 @@ consentSchema.index({ accountId: 1, personKey: 1, channel: 1 }, { unique: true }
 consentSchema.index({ accountId: 1, customerId: 1 });
 export type ConsentDoc = InferSchemaType<typeof consentSchema> & { _id: string };
 export const Consent = model('Consent', consentSchema, 'consents');
+/** The mobile or email consent was given for, in the record and its history. */
+protect(Consent, { fields: { address: 'contact', 'history.address': 'contact' } });

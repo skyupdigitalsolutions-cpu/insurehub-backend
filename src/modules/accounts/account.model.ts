@@ -1,5 +1,6 @@
 import { Schema, model, type InferSchemaType } from 'mongoose';
 import { newId } from '../../lib/ids.js';
+import { protect } from '../../lib/pii.js';
 
 /**
  * Account = one advisor's private space (tenant, Section 1.6). Subscription, wallet, empty advisor
@@ -105,3 +106,11 @@ const accountSchema = new Schema(
 
 export type AccountDoc = InferSchemaType<typeof accountSchema> & { _id: string };
 export const Account = model('Account', accountSchema, 'accounts');
+/** Advisor contact details and KYC values are encrypted (lib/pii.ts); PAN and the read values were already. */
+protect(Account, {
+  fields: {
+    'profile.contact.email': 'email', 'profile.contact.altMobile': 'mobile',
+    'profile.kyc.nameOnPan': 'text', 'profile.kyc.rejectNote': 'text',
+    'profile.professional.licenceNumber': 'text',
+  },
+});

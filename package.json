@@ -21,7 +21,8 @@
     "db:migrate:lead-sources": "tsx --env-file=.env src/scripts/migrate-lead-source-codes.ts",
     "db:migrate:stage-b": "tsx --env-file=.env src/scripts/migrate-stage-b.ts",
     "db:migrate:life-term": "tsx --env-file=.env src/scripts/migrate-life-term.ts",
-    "db:migrate:pending-approvals": "tsx --env-file=.env src/scripts/migrate-pending-approvals.ts"
+    "db:migrate:pending-approvals": "tsx --env-file=.env src/scripts/migrate-pending-approvals.ts",
+    "db:migrate:encrypt-pii": "tsx --env-file=.env src/scripts/migrate-encrypt-pii.ts"
   },
   "dependencies": {
     "@google-cloud/documentai": "10.2.0",

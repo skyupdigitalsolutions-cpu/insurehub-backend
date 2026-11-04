@@ -1,3 +1,4 @@
+import { protect } from '../../lib/pii.js';
 import { Schema, model, type InferSchemaType } from 'mongoose';
 import { newId } from '../../lib/ids.js';
 
@@ -31,6 +32,7 @@ challengeSchema.index({ mobile: 1, purpose: 1 }, { unique: true, partialFilterEx
 challengeSchema.index({ mobile: 1, issuedAt: -1 });
 export type OtpChallengeDoc = InferSchemaType<typeof challengeSchema> & { _id: string };
 export const OtpChallenge = model('OtpChallenge', challengeSchema, 'otp_challenges');
+protect(OtpChallenge, { fields: { mobile: 'mobile', pendingName: 'text' } });
 
 /** Lock after CFG-03 wrong tries (per purpose) or CFG-05 sends (purpose '*', the whole number), for CFG-06. */
 const lockSchema = new Schema(
@@ -43,6 +45,8 @@ const lockSchema = new Schema(
 );
 lockSchema.index({ lockedUntil: 1 }, { expireAfterSeconds: 0 });
 export const OtpLock = model('OtpLock', lockSchema, 'otp_locks');
+/** The id holds the mobile, so it is stored encrypted (deterministic: lookups by id still work). */
+protect(OtpLock, { fields: { _id: 'key' } });
 
 /**
  * A verified OTP that authorises ONE later action: a step-up before a sensitive action (CFG-83, AUTH-26)

@@ -2,6 +2,7 @@ import { Schema, model, type InferSchemaType } from 'mongoose';
 import { newId } from '../../lib/ids.js';
 import { STORED_MOBILE } from '../../lib/phone.js';
 import { LEAD_STATUSES } from './leadStatus.js';
+import { protect, searchIndexFields } from '../../lib/pii.js';
 
 export const CONTACT_OUTCOMES = ['SPOKE_TO_CUSTOMER', 'NOT_REACHABLE', 'ASKED_TO_CALL_BACK'] as const;
 export const OUTCOME_LABEL = { SPOKE_TO_CUSTOMER: 'Spoke to customer', NOT_REACHABLE: 'Not reachable', ASKED_TO_CALL_BACK: 'Asked to call back' } as const;
@@ -59,7 +60,11 @@ const leadSchema = new Schema(
   },
   { timestamps: true, versionKey: false },
 );
+leadSchema.add(searchIndexFields('name', 'mobile', 'email'));
 leadSchema.index({ accountId: 1, number: 1 }, { unique: true });
+leadSchema.index({ accountId: 1, 'searchIndex.name': 1 });
+leadSchema.index({ accountId: 1, 'searchIndex.mobile': 1 });
+leadSchema.index({ accountId: 1, 'searchIndex.email': 1 });
 // Exact duplicate = same name and mobile in an open lead: a database rule (P-12, GR-12).
 leadSchema.index({ accountId: 1, mobile: 1, nameKey: 1 }, { unique: true, partialFilterExpression: { isOpen: true }, name: 'open_lead_exact_dup' });
 leadSchema.index({ accountId: 1, createdAt: -1 });
@@ -69,3 +74,9 @@ leadSchema.index({ accountId: 1, sourceCode: 1, createdAt: -1 });
 
 export type LeadDoc = InferSchemaType<typeof leadSchema> & { _id: string; createdAt: Date; updatedAt: Date };
 export const Lead = model('Lead', leadSchema, 'leads');
+/** Name, mobiles and email are encrypted in the database (lib/pii.ts); searchIndex holds the keyed search tokens. */
+protect(Lead, {
+  // adRef.externalId repeats the import key, which for website forms is built from the answers.
+  fields: { name: 'name', nameKey: 'nameKey', mobile: 'mobile', altMobile: 'mobile', email: 'email', 'adRef.externalId': 'key' },
+  search: { name: 'name', mobile: 'mobile', email: 'email' },
+});

@@ -1,3 +1,4 @@
+import { protect } from '../../lib/pii.js';
 import { Schema, model, type InferSchemaType } from 'mongoose';
 import { newId } from '../../lib/ids.js';
 
@@ -42,6 +43,8 @@ outboxSchema.index({ providerMessageId: 1 }, { sparse: true });
 outboxSchema.index({ accountId: 1, createdAt: -1 });
 export type OutboxDoc = InferSchemaType<typeof outboxSchema> & { _id: string; createdAt: Date };
 export const Outbox = model('Outbox', outboxSchema, 'outbox');
+/** Recipient, wording and template values name the person: encrypted (lib/pii.ts). */
+protect(Outbox, { fields: { to: 'contact', subject: 'text', text: 'text', params: 'json' } });
 
 /** P-39 message templates. Email: ACTIVE on approval. WhatsApp: ACTIVE only when Meta approves (AC-P39-1). */
 const templateSchema = new Schema(
@@ -71,6 +74,7 @@ export const MessageTemplate = model('MessageTemplate', templateSchema, 'message
 export const WebhookEvent = model('WebhookEvent', new Schema({ _id: String, source: String, at: Date }, { versionKey: false }), 'webhook_events');
 /** P-42: a hard bounce stops further emails to that address (AC-P42-4). */
 export const BouncedAddress = model('BouncedAddress', new Schema({ _id: String, at: Date, reason: String }, { versionKey: false }), 'bounced_addresses');
+protect(BouncedAddress, { fields: { _id: 'key' } });
 
 /** P-56 WhatsApp wallet transactions. A debit references its message (once each, AC-P56-1). */
 const walletSchema = new Schema(

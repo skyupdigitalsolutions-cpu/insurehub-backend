@@ -1,5 +1,6 @@
 import { Schema, model, type InferSchemaType } from 'mongoose';
 import { newId } from '../../lib/ids.js';
+import { protect } from '../../lib/pii.js';
 
 /** A referral code (P-44): made by the server, unique by a database rule, never reused. ACTIVE → REVOKED. */
 const codeSchema = new Schema(
@@ -38,3 +39,4 @@ submissionSchema.index({ referrerUserId: 1, createdAt: -1 });
 submissionSchema.index({ accountId: 1, mobile: 1, createdAt: -1 });
 export type SubmissionDoc = InferSchemaType<typeof submissionSchema> & { _id: string; createdAt: Date };
 export const ReferralSubmission = model('ReferralSubmission', submissionSchema, 'referral_submissions');
+protect(ReferralSubmission, { fields: { name: 'name', mobile: 'mobile', email: 'email', message: 'text' } });

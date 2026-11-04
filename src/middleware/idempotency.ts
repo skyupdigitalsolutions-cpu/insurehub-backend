@@ -1,5 +1,6 @@
 import type { Request, RequestHandler, Response } from 'express';
 import { Schema, model } from 'mongoose';
+import { protect } from '../lib/pii.js';
 import { AppError } from '../lib/errors.js';
 import { sha256 } from '../lib/crypto.js';
 import { isDuplicateKey } from '../lib/mongo.js';
@@ -19,6 +20,8 @@ const keySchema = new Schema(
 );
 keySchema.index({ createdAt: 1 }, { expireAfterSeconds: 24 * 3600 });
 export const IdempotencyKey = model('IdempotencyKey', keySchema, 'idempotency_keys');
+/** The id can hold a mobile (OTP scope) and the saved response holds whatever the API returned: both encrypted. */
+protect(IdempotencyKey, { fields: { _id: 'key', responseBody: 'json' } });
 
 const KEY = /^[A-Za-z0-9_-]{8,128}$/;
 const ABANDONED_MS = 60_000;

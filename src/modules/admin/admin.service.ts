@@ -388,7 +388,11 @@ export async function downloadExport(ctx: AuthContext, id: string, req: Request)
 }
 
 // ── P-57 support grants ──
-export async function supportStaff() { return (await User.find({ role: { $in: ['STF', 'ADM'] }, status: 'ACTIVE' }, { name: 1, role: 1 }).sort({ name: 1 }).lean<Array<{ _id: string; name: string; role: string }>>()).map((u) => ({ id: u._id, name: u.name, role: u.role })); }
+/** Names are encrypted in the database, so the list is sorted after reading. */
+export async function supportStaff() {
+  const rows = await User.find({ role: { $in: ['STF', 'ADM'] }, status: 'ACTIVE' }, { name: 1, role: 1 }).lean<Array<{ _id: string; name: string; role: string }>>();
+  return rows.sort((a, b) => a.name.localeCompare(b.name, 'en', { sensitivity: 'base' })).map((u) => ({ id: u._id, name: u.name, role: u.role }));
+}
 export async function giveGrant(ctx: AuthContext, b: { granteeUserId: string; reason: string }, req: Request) {
   const g = await User.findOne({ _id: b.granteeUserId, role: { $in: ['STF', 'ADM'] }, status: 'ACTIVE' }, { name: 1 }).lean<{ name: string }>();
   if (!g) throw AppError.field('granteeUserId', 'VAL-22');

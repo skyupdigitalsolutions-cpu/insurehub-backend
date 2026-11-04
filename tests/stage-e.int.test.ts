@@ -36,7 +36,9 @@ describe('items left waiting for approval', () => {
     expect(results['KYC result B']).toMatch(/^RETURNED_TO_DRAFT: /); // only one active template per purpose (COM-05)
     expect((await MessageTemplate.findOne({ name: 'KYC result B' }).lean())!.status).toBe('DRAFT');
     expect((await MessageTemplate.findOne({ name: 'With Meta' }).lean())!.status).toBe('PENDING_APPROVAL'); // Meta decides that one
-    expect(await AuditLog.findOne({ action: 'PENDING_ITEM_PUBLISHED', 'after.kind': 'INSURER' }).lean()).toMatchObject({ after: { originalMaker: 'usr_old_maker' } });
+    // Audit snapshots are encrypted as a whole (lib/pii.ts), so match inside them after reading.
+    const published = await AuditLog.find({ action: 'PENDING_ITEM_PUBLISHED' }).lean<Array<{ after?: { kind?: string } }>>();
+    expect(published.find((a) => a.after?.kind === 'INSURER')).toMatchObject({ after: { originalMaker: 'usr_old_maker' } });
     expect((await runPendingApprovals({ mode: 'dry' })).count).toBe(0);
   });
 

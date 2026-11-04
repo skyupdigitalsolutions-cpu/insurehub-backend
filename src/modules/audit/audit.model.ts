@@ -1,3 +1,4 @@
+import { protect } from '../../lib/pii.js';
 import { Schema, model } from 'mongoose';
 
 /**
@@ -35,3 +36,5 @@ for (const op of ['updateOne', 'updateMany', 'findOneAndUpdate', 'replaceOne', '
   auditSchema.pre(op, blocked);
 }
 export const AuditLog = model('AuditLog', auditSchema, 'audit_log');
+/** Snapshots hold names, emails and other personal data: stored encrypted, decrypted when the log is read. */
+protect(AuditLog, { fields: { before: 'json', after: 'json' } });

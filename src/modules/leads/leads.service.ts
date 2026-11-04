@@ -9,6 +9,7 @@ import { newId } from '../../lib/ids.js';
 import { msg, type MessageId, type MessageParams } from '../../lib/messages.js';
 import { isDuplicateKey, withTx } from '../../lib/mongo.js';
 import { escapeRegex, pageMeta, pageSize } from '../../lib/pagination.js';
+import { piiSearch } from '../../lib/pii.js';
 import { accountOf } from '../../middleware/authorize.js';
 import { Account } from '../accounts/account.model.js';
 import { nextNumber } from '../accounts/numbers.js';
@@ -187,9 +188,8 @@ export async function listLeads(ctx: AuthContext, q: { page: number; limit?: num
   }
   if (q.campaignId) and.push(q.campaignId.startsWith('cnx_') ? { 'adRef.connectionId': q.campaignId } : { 'adRef.formId': q.campaignId });
   if (q.search) {
-    const digits = q.search.replace(/\D/g, '');
-    const rx = new RegExp(escapeRegex(q.search), 'i');
-    and.push({ $or: [{ name: rx }, { number: rx }, { email: rx }, ...(digits.length >= 4 ? [{ mobile: new RegExp(escapeRegex(digits)) }] : [])] });
+    // Name, email and mobile are encrypted: they match through keyed search tokens (lib/pii.ts); the number is plain.
+    and.push({ $or: [{ number: new RegExp(escapeRegex(q.search), 'i') }, ...piiSearch(q.search, { name: true, email: true, mobile: 4 })] });
   }
   if (and.length) filter.$and = and;
   const limit = pageSize(q.limit);

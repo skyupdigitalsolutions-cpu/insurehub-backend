@@ -1,3 +1,4 @@
+import { protect } from '../../lib/pii.js';
 import { Schema, model, type InferSchemaType } from 'mongoose';
 import { newId } from '../../lib/ids.js';
 
@@ -89,6 +90,8 @@ submissionSchema.index({ accountId: 1, adCampaignId: 1, createdAt: -1 });
 submissionSchema.index({ accountId: 1, formId: 1, createdAt: -1 });
 export type SubmissionDoc = InferSchemaType<typeof submissionSchema> & { _id: string; createdAt: Date };
 export const Submission = model('LeadSubmission', submissionSchema, 'lead_submissions');
+/** Form answers are the person's details; a website form's external id is built from them. */
+protect(Submission, { fields: { 'answers.value': 'text', externalId: 'key' } });
 
 /**
  * Stage H (change #1 items 9–13): a platform campaign (Meta, Google), created when its first lead arrives or when a

@@ -1,3 +1,4 @@
+import { protect } from '../../lib/pii.js';
 import { Schema, model, type InferSchemaType } from 'mongoose';
 import { newId } from '../../lib/ids.js';
 
@@ -50,6 +51,7 @@ policySchema.index({ proposalId: 1 }, { unique: true, partialFilterExpression: {
 policySchema.index({ accountId: 1, policyNumberKey: 1 }, { unique: true, partialFilterExpression: { policyNumberKey: { $type: 'string' } }, name: 'one_number_per_insurer' });
 export type PolicyDoc = InferSchemaType<typeof policySchema> & { _id: string; createdAt: Date; updatedAt: Date };
 export const Policy = model('Policy', policySchema, 'policies');
+protect(Policy, { fields: { insured: 'json', frozen: 'json', 'history.before': 'json', 'history.after': 'json' } });
 
 /**
  * P-35 nominee list versions. Every row stores the policy and the customer; the newest is CURRENT, earlier ones
@@ -73,3 +75,4 @@ nomineeVersionSchema.index({ policyId: 1, number: 1 }, { unique: true });
 nomineeVersionSchema.index({ policyId: 1 }, { unique: true, partialFilterExpression: { status: 'CURRENT' }, name: 'one_current_list' });
 export type NomineeVersionDoc = InferSchemaType<typeof nomineeVersionSchema> & { _id: string; createdAt: Date };
 export const NomineeVersion = model('NomineeVersion', nomineeVersionSchema, 'policy_nominees');
+protect(NomineeVersion, { fields: { nominees: 'json' } });

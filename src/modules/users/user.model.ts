@@ -1,6 +1,7 @@
 import { Schema, model, type InferSchemaType } from 'mongoose';
 import { newId } from '../../lib/ids.js';
 import { STORED_MOBILE } from '../../lib/phone.js';
+import { protect } from '../../lib/pii.js';
 
 export const ROLES = ['ADV', 'AST', 'REF', 'STF', 'ADM'] as const;
 export type Role = (typeof ROLES)[number];
@@ -40,3 +41,5 @@ userSchema.index({ accountId: 1, role: 1 });
 
 export type UserDoc = InferSchemaType<typeof userSchema> & { _id: string; createdAt: Date; updatedAt: Date };
 export const User = model('User', userSchema, 'users');
+/** Encrypted in the database (lib/pii.ts). Mobile is deterministic, so sign-in lookups and the unique rule still work. */
+protect(User, { fields: { name: 'name', mobile: 'mobile', email: 'email' } });
