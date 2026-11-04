@@ -37,8 +37,14 @@ const editBody = z.object({
 export function taskRoutes() {
   const r = Router();
   r.use(authenticate, allow('tasks.work'));
-  r.get('/', validate({ query: z.object({ tab: enumOf(svc.TABS).default('TODAY'), type: enumOf(TASK_TYPES).optional() }) }, labels), async (req, res) =>
-    sendData(res, await svc.list(req.auth!, (req.query.tab as (typeof svc.TABS)[number]) ?? 'TODAY', req.query.type ? String(req.query.type) : undefined)));
+  r.get('/', validate({ query: z.object({
+    tab: enumOf(svc.TABS).default('TODAY'), type: enumOf(TASK_TYPES).optional(),
+    linkedType: enumOf(['LEAD', 'CUSTOMER'] as const).optional(), linkedId: z.string().regex(/^(led|cus)_[a-f0-9]{28}$/).optional(),
+  }).refine((q) => !q.linkedId === !q.linkedType, { message: 'VAL-22', path: ['linkedId'] }) }, labels), async (req, res) => {
+    const q = res.locals.query as { tab?: string; type?: string; linkedType?: 'LEAD' | 'CUSTOMER'; linkedId?: string };
+    sendData(res, await svc.list(req.auth!, (q.tab as (typeof svc.TABS)[number]) ?? 'TODAY', q.type ? String(q.type) : undefined,
+      q.linkedType && q.linkedId ? { type: q.linkedType, id: q.linkedId } : undefined));
+  });
   r.post('/', writable, validate({ body: createBody }, labels), idempotent(), async (req, res) =>
     sendDone(res, await svc.create(req.auth!, req.body, req), 'GEN-08', { 'Record type': 'Task' }, 201));
   r.patch('/:id', writable, validate({ params: idParam, body: editBody }, labels), async (req, res) =>

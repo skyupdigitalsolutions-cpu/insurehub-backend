@@ -16,7 +16,7 @@ const labels = { outcome: 'Outcome', note: 'Note', reason: 'Reason', paymentDate
 export function renewalRoutes() {
   const r = Router();
   r.use(authenticate, allow('renewals.view'));
-  r.get('/', validate({ query: z.object({ status: z.string().max(20).optional(), from: z.string().max(10).optional(), to: z.string().max(10).optional(), insurerId: z.string().max(40).optional(), typeId: z.string().max(40).optional() }) }), async (req, res) =>
+  r.get('/', validate({ query: z.object({ status: z.string().max(20).optional(), from: z.string().max(10).optional(), to: z.string().max(10).optional(), insurerId: z.string().max(40).optional(), typeId: z.string().max(40).optional(), customerId: z.string().regex(/^cus_[a-f0-9]{28}$/).optional() }) }), async (req, res) =>
     sendData(res, await svc.list(req.auth!, req.query as Record<string, string>)));
   r.get('/:id', validate({ params: id }), async (req, res) => sendData(res, await svc.get(req.auth!, String(req.params.id))));
   const m = [allow('renewals.manage'), writable] as const;

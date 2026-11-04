@@ -22,6 +22,7 @@ export function customerRoutes() {
     const { items, meta } = await svc.listCustomers(req.auth!, res.locals.query);
     sendData(res, items, 200, meta);
   });
+  r.get('/stats', async (req, res) => sendData(res, await svc.customerStats(req.auth!))); // before /:id
   r.get('/duplicate-check', validate({ query: duplicateQuery }, labels), async (req, res) => sendData(res, await svc.duplicateCheck(req.auth!, res.locals.query)));
   r.post('/', writable, validate({ body: createCustomerBody }, labels), idempotent(), async (req, res) => {
     const c = await svc.createCustomer(req.auth!, req.body, req);

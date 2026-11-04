@@ -1,5 +1,6 @@
 import { env } from '../../config/env.js';
 import { clock } from '../../lib/clock.js';
+import { logger } from '../../lib/logger.js';
 import { redisCache } from '../../lib/redis.js';
 
 /**
@@ -17,6 +18,8 @@ export async function sendSms(to: string, kind: SmsKind, text: string): Promise<
     const r = redisCache();
     if (await r.get(FAIL)) throw new Error('Simulated SMS provider failure (dev tools)');
     await r.multi().lpush(OUTBOX, JSON.stringify({ to, kind, text, at: clock.now().toISOString() })).ltrim(OUTBOX, 0, 49).exec();
+    // Development only (SMS_PROVIDER=dev is refused in production): show the message in the API terminal too.
+    if (env.NODE_ENV !== 'test') logger.info(`[dev SMS] to ${to} (${kind}): ${text}`);
     return;
   }
   if (!env.MSG91_AUTH_KEY || !env.MSG91_OTP_TEMPLATE_ID) throw new Error('MSG91 is not configured');

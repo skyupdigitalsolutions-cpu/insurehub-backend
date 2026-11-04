@@ -5,14 +5,14 @@ import {
 import { pageQuery } from '../../lib/pagination.js';
 import { sourceCodeOf } from '../../lib/leadSources.js';
 import { customerExtrasBody } from '../customers/customers.schemas.js';
-import { CONTACT_OUTCOMES, PRIORITIES } from './lead.model.js';
+import { CONTACT_CHANNELS, CONTACT_OUTCOMES, PRIORITIES } from './lead.model.js';
 import { LEAD_STATUSES } from './leadStatus.js';
 
 export const labels = {
   pipelineId: 'Pipeline', name: 'Lead name', mobile: 'Primary mobile', altMobile: 'Alternate mobile', email: 'Email', source: 'Source',
   referrerId: 'Referrer', referredByCustomerId: 'Referred by client', campaign: 'Campaign name', interests: 'Insurance interest',
   priority: 'Priority', nextFollowUpAt: 'Next follow-up', notes: 'Notes', status: 'New status', lostReason: 'Lost reason', note: 'Note',
-  outcome: 'Outcome', mode: 'Conversion', customerId: 'Customer', version: 'Version',
+  outcome: 'Outcome', channel: 'Contact method', mode: 'Conversion', customerId: 'Customer', version: 'Version',
 };
 
 /**
@@ -68,7 +68,7 @@ export const statusBody = z.object({
   note: optional(notes()),
 });
 
-export const contactBody = z.object({ outcome: required(enumOf(CONTACT_OUTCOMES)), note: optional(notes()) });
+export const contactBody = z.object({ outcome: required(enumOf(CONTACT_OUTCOMES)), channel: optional(enumOf(CONTACT_CHANNELS)), note: optional(notes()) });
 
 /** P-14: "Link to existing" or "Create new customer", with the extra customer fields of the form. */
 export const convertBody = z.object({

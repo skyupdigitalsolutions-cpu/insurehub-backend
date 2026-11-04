@@ -15,7 +15,7 @@ import { audit } from '../audit/audit.service.js';
 import { Lead } from '../leads/lead.model.js';
 import type { AuthContext } from '../rbac/capabilities.js';
 import { User } from '../users/user.model.js';
-import { Customer, FamilyMember, type CustomerDoc, type FamilyDoc } from './customer.model.js';
+import { Consent, Customer, FamilyMember, type CustomerDoc, type FamilyDoc } from './customer.model.js';
 import { personKey, personalDataConsent, resetConsents } from './consent.service.js';
 import type { CustomerExtras } from './customers.schemas.js';
 
@@ -148,7 +148,43 @@ export async function listCustomers(ctx: AuthContext, q: { page: number; limit?:
     Customer.find(filter).sort({ createdAt: -1, _id: -1 }).skip((q.page - 1) * limit).limit(limit).lean<CustomerDoc[]>(),
     Customer.countDocuments(filter),
   ]);
-  return { items: items.map(customerSummary), meta: pageMeta(q.page, limit, total) };
+  return { items: await withRowCounts(items.map(customerSummary)), meta: pageMeta(q.page, limit, total) };
+}
+
+/** Gap fix (04 · Policy Holders): family members, policies and personal-data consent on every row. */
+async function withRowCounts<T extends { id: string }>(rows: T[]) {
+  if (!rows.length) return rows.map((r) => ({ ...r, familyCount: 0, policyCount: 0, personalDataConsent: 'NOT_RECORDED' }));
+  const ids = rows.map((r) => r.id);
+  const { Policy } = await import('../policies/policy.model.js');
+  const [fam, pols, cons] = await Promise.all([
+    FamilyMember.aggregate<{ _id: string; n: number }>([{ $match: { customerId: { $in: ids }, status: 'ACTIVE' } }, { $group: { _id: '$customerId', n: { $sum: 1 } } }]),
+    Policy.aggregate<{ _id: string; n: number }>([{ $match: { customerId: { $in: ids }, status: { $in: ['AWAITING_ISSUANCE', 'ISSUED'] } } }, { $group: { _id: '$customerId', n: { $sum: 1 } } }]),
+    Consent.find({ personKey: { $in: ids.map((id) => personKey('C', id)) }, channel: 'PERSONAL_DATA' }, { personKey: 1, status: 1 }).lean<Array<{ personKey: string; status: string }>>(),
+  ]);
+  const f = new Map(fam.map((x) => [x._id, x.n])); const p = new Map(pols.map((x) => [x._id, x.n]));
+  const c = new Map(cons.map((x) => [x.personKey.slice(2), x.status]));
+  return rows.map((r) => ({ ...r, familyCount: f.get(r.id) ?? 0, policyCount: p.get(r.id) ?? 0, personalDataConsent: c.get(r.id) ?? 'NOT_RECORDED' }));
+}
+
+/** Gap fix: the four cards above the Policy Holders list (GET /customers/stats). */
+export async function customerStats(ctx: AuthContext) {
+  const accountId = accountOf(ctx);
+  const { Policy } = await import('../policies/policy.model.js');
+  const activeIds = (await Customer.find({ accountId, status: 'ACTIVE' }, { _id: 1 }).lean<Array<{ _id: string }>>()).map((c) => c._id);
+  const [inactive, members, households, inForce, awaiting, given] = await Promise.all([
+    Customer.countDocuments({ accountId, status: 'INACTIVE' }),
+    FamilyMember.countDocuments({ accountId, customerId: { $in: activeIds }, status: 'ACTIVE' }),
+    FamilyMember.distinct('customerId', { accountId, customerId: { $in: activeIds }, status: 'ACTIVE' }),
+    Policy.countDocuments({ accountId, status: 'ISSUED' }),
+    Policy.countDocuments({ accountId, status: 'AWAITING_ISSUANCE' }),
+    Consent.countDocuments({ accountId, channel: 'PERSONAL_DATA', status: 'GIVEN', personKey: { $in: activeIds.map((id) => personKey('C', id)) } }),
+  ]);
+  return {
+    active: activeIds.length, inactive,
+    familyMembers: members, households: households.length,
+    policiesInForce: inForce, awaitingIssuance: awaiting,
+    consentPending: activeIds.length - given,
+  };
 }
 
 /** Customer detail (P-15 step 4). Tabs for quotations, policies, payments, renewals and documents arrive with their modules. */

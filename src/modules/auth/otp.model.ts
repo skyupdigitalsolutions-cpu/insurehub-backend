@@ -19,6 +19,7 @@ const challengeSchema = new Schema(
     sendFailed: { type: Boolean, default: false },
     userId: { type: String, default: null },
     pendingName: { type: String, default: null },
+    pendingEmail: { type: String, default: null }, // sign-up form email (optional), applied when the account is created
     termsVersion: { type: String, default: null },
     ip: { type: String, default: null },
     issuedAt: { type: Date, required: true },
@@ -32,7 +33,7 @@ challengeSchema.index({ mobile: 1, purpose: 1 }, { unique: true, partialFilterEx
 challengeSchema.index({ mobile: 1, issuedAt: -1 });
 export type OtpChallengeDoc = InferSchemaType<typeof challengeSchema> & { _id: string };
 export const OtpChallenge = model('OtpChallenge', challengeSchema, 'otp_challenges');
-protect(OtpChallenge, { fields: { mobile: 'mobile', pendingName: 'text' } });
+protect(OtpChallenge, { fields: { mobile: 'mobile', pendingName: 'text', pendingEmail: 'email' } });
 
 /** Lock after CFG-03 wrong tries (per purpose) or CFG-05 sends (purpose '*', the whole number), for CFG-06. */
 const lockSchema = new Schema(

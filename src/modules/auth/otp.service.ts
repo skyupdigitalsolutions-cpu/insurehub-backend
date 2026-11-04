@@ -41,7 +41,7 @@ async function assertNotLocked(mobile: string, purpose: OtpPurpose, includeSendL
  * then locked for CFG-06). A failed SMS does not count towards CFG-05 (AUTH-13).
  */
 export async function issueOtp(
-  input: { mobile: string; purpose: OtpPurpose; userId?: string | null; pendingName?: string | null; termsVersion?: string | null },
+  input: { mobile: string; purpose: OtpPurpose; userId?: string | null; pendingName?: string | null; pendingEmail?: string | null; termsVersion?: string | null },
   req: Request,
   sentMessage: { id: MessageId; params?: MessageParams } = { id: 'AUTH-01' },
 ): Promise<OtpSendResult> {
@@ -60,6 +60,7 @@ export async function issueOtp(
   if (open && open.sent && open.expiresAt > now && now.getTime() - open.issuedAt.getTime() < cfgNum('CFG-04') * 1000) {
     if (input.pendingName !== undefined) {
       open.pendingName = input.pendingName ?? null;
+      open.pendingEmail = input.pendingEmail ?? null;
       open.termsVersion = input.termsVersion ?? null;
       await open.save();
     }
@@ -83,7 +84,7 @@ export async function issueOtp(
   try {
     ch = await OtpChallenge.create({
       mobile, purpose, codeHash: otpHash(code, salt), salt, status: 'ISSUED', userId: input.userId ?? null,
-      pendingName: input.pendingName ?? null, termsVersion: input.termsVersion ?? null, ip: req.ip ?? null,
+      pendingName: input.pendingName ?? null, pendingEmail: input.pendingEmail ?? null, termsVersion: input.termsVersion ?? null, ip: req.ip ?? null,
       issuedAt: now, expiresAt: new Date(now.getTime() + minutes(cfgNum('CFG-02'))),
     });
   } catch (err) {

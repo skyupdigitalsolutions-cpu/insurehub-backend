@@ -131,7 +131,7 @@ async function load(ctx: AuthContext, id: string) {
 }
 async function rowOf(c: CycleDoc, today = istToday()) {
   const [pol, cus, sent] = await Promise.all([
-    Policy.findById(c.policyId, { policyNumber: 1, productName: 1, insurerId: 1, typeId: 1, endDate: 1, nextDueDate: 1, frequency: 1, status: 1 }).lean<PolicyDoc>(),
+    Policy.findById(c.policyId, { policyNumber: 1, productName: 1, insurerId: 1, typeId: 1, endDate: 1, nextDueDate: 1, frequency: 1, status: 1, premium: 1 }).lean<PolicyDoc>(),
     Customer.findById(c.customerId, { name: 1, number: 1 }).lean<{ name: string; number: string }>(),
     Outbox.countDocuments({ 'related.cycleId': c._id, status: { $in: ['QUEUED', 'SENT'] } }),
   ]);
@@ -140,14 +140,19 @@ async function rowOf(c: CycleDoc, today = istToday()) {
   return {
     id: c._id, status: c.status, dueDate: c.dueDate, graceUntil: c.graceUntil, daysLeft: daysBetween(today, c.dueDate), reason: c.reason, remindersPaused: c.remindersPaused,
     lastContact: last ? { at: last.at, outcome: last.outcome, note: last.note } : null, contacts: c.contacts, remindersSent: sent, renewalQuotationId: c.renewalQuotationId, renewedBy: c.renewedBy, version: c.version,
-    policy: pol ? { id: pol._id, number: pol.policyNumber, product: pol.productName, insurer: insurer?.name ?? null, insurerId: pol.insurerId, typeId: pol.typeId, endDate: pol.endDate, nextDueDate: pol.nextDueDate, frequency: pol.frequency, status: pol.status } : null,
+    // Gap fix: premium (renewals list and dashboard cards)
+    policy: pol ? { id: pol._id, number: pol.policyNumber, product: pol.productName, insurer: insurer?.name ?? null, insurerId: pol.insurerId, typeId: pol.typeId, endDate: pol.endDate, nextDueDate: pol.nextDueDate, frequency: pol.frequency, status: pol.status, premium: (pol as { premium?: number | null }).premium ?? null } : null,
+    premium: (pol as { premium?: number | null } | null)?.premium ?? null,
     customer: cus ? { id: c.customerId, name: cus.name, number: cus.number } : null,
   };
 }
 
 /** Renewals list (default: renewal date, soonest first), with filters. */
-export async function list(ctx: AuthContext, q: { status?: string; from?: string; to?: string; insurerId?: string; typeId?: string }) {
-  const rows = await RenewalCycle.find({ accountId: ctx.accountId, ...(q.status ? { status: q.status } : { status: { $ne: 'RENEWED' } }), ...(q.from || q.to ? { dueDate: { ...(q.from ? { $gte: iso(q.from) } : {}), ...(q.to ? { $lte: iso(q.to) } : {}) } } : {}) }).sort({ dueDate: 1 }).limit(500).lean<CycleDoc[]>();
+/** Rows for other screens (dashboard renewal cards). */
+export const renewalRows = (cycles: CycleDoc[]) => Promise.all(cycles.map((c) => rowOf(c)));
+
+export async function list(ctx: AuthContext, q: { status?: string; from?: string; to?: string; insurerId?: string; typeId?: string; customerId?: string }) {
+  const rows = await RenewalCycle.find({ accountId: ctx.accountId, ...(q.customerId ? { customerId: q.customerId } : {}), ...(q.status ? { status: q.status } : { status: { $ne: 'RENEWED' } }), ...(q.from || q.to ? { dueDate: { ...(q.from ? { $gte: iso(q.from) } : {}), ...(q.to ? { $lte: iso(q.to) } : {}) } } : {}) }).sort({ dueDate: 1 }).limit(500).lean<CycleDoc[]>();
   const out = await Promise.all(rows.map((r) => rowOf(r)));
   return out.filter((r) => (!q.insurerId || r.policy?.insurerId === q.insurerId) && (!q.typeId || r.policy?.typeId === q.typeId));
 }

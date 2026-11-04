@@ -48,7 +48,8 @@ async function load(ctx: AuthContext, id: string) {
 }
 
 /** Tasks page (P-11 step 4): Overdue, Today, Upcoming, Done — with the count of each tab. */
-export async function list(ctx: AuthContext, tab: (typeof TABS)[number], taskType?: string) {
+/** Gap fix: `linked` limits the list (and the tab counts) to one lead or policy holder — the record's own task list. */
+export async function list(ctx: AuthContext, tab: (typeof TABS)[number], taskType?: string, linked?: { type: 'LEAD' | 'CUSTOMER'; id: string }) {
   const now = clock.now();
   const today = istDayBounds(istToday());
   const filters: Record<(typeof TABS)[number], Record<string, unknown>> = {
@@ -58,7 +59,7 @@ export async function list(ctx: AuthContext, tab: (typeof TABS)[number], taskTyp
     DONE: { status: 'DONE' },
     CANCELLED: { status: 'CANCELLED' },
   };
-  const base: Record<string, unknown> = { accountId: ctx.accountId, ...(taskType ? { taskType } : {}) };
+  const base: Record<string, unknown> = { accountId: ctx.accountId, ...(taskType ? { taskType } : {}), ...(linked ? { linkedType: linked.type, linkedId: linked.id } : {}) };
   const [rows, ...counts] = await Promise.all([
     Task.find({ ...base, ...filters[tab] }).sort(tab === 'DONE' ? { doneAt: -1 } : tab === 'CANCELLED' ? { updatedAt: -1 } : { dueAt: 1 }).limit(200).lean<TaskDoc[]>(),
     ...TABS.map((t) => Task.countDocuments({ ...base, ...filters[t] })),

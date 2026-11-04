@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { cfgNum } from '../../config/cfg.js';
-import { declaration, fail, mobile, personName, required } from '../../lib/fields.js';
+import { declaration, email, fail, mobile, optional, personName, required } from '../../lib/fields.js';
 
 // FLD-18 OTP: exactly CFG-01 digits.
 const otp = () => z.string({ invalid_type_error: 'VAL-19' }).transform((v, ctx) => {
@@ -8,9 +8,10 @@ const otp = () => z.string({ invalid_type_error: 'VAL-19' }).transform((v, ctx) 
   return new RegExp(`^\\d{${cfgNum('CFG-01')}}$`).test(code) ? code : fail(ctx, 'VAL-19');
 });
 
-export const labels = { name: 'Full name', mobile: 'Mobile number', termsAccepted: 'Terms', code: 'OTP', newMobile: 'New mobile', changeToken: 'Change request' };
+export const labels = { email: 'Email', name: 'Full name', mobile: 'Mobile number', termsAccepted: 'Terms', code: 'OTP', newMobile: 'New mobile', changeToken: 'Change request' };
 
-export const registerOtpBody = z.object({ name: required(personName()), mobile: required(mobile()), termsAccepted: required(declaration()) });
+/** Gap fix: the sign-up form (A4) also asks for an email; optional, stored on the advisor and the profile contact. */
+export const registerOtpBody = z.object({ name: required(personName()), mobile: required(mobile()), email: optional(email()), termsAccepted: required(declaration()) });
 export const loginOtpBody = z.object({ mobile: required(mobile()) });
 export const verifyBody = z.object({ mobile: required(mobile()), code: required(otp()) });
 export const codeBody = z.object({ code: required(otp()) });

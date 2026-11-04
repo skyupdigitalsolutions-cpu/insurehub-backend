@@ -52,6 +52,11 @@ export const NOTIFICATION_FILTERS = {
   CATALOGUE: ['CATALOGUE_PRODUCT_PUBLISHED', 'CORRECTION_ACCEPTED', 'CORRECTION_REJECTED', 'OCR_DONE', 'OCR_FAILED'],
 } as const;
 export type NotificationFilter = 'ALL' | 'UNREAD' | keyof typeof NOTIFICATION_FILTERS;
+/** The filter tab an event belongs to (first match in NOTIFICATION_FILTERS order), or OTHER. */
+export function categoryOf(kind: string): keyof typeof NOTIFICATION_FILTERS | 'OTHER' {
+  for (const [k, kinds] of Object.entries(NOTIFICATION_FILTERS)) if ((kinds as readonly string[]).includes(kind)) return k as keyof typeof NOTIFICATION_FILTERS;
+  return 'OTHER';
+}
 
 /** The bell list: the user's own items, newest first (P-10 step 2), optionally filtered (change #60). */
 export async function list(ctx: AuthContext, opts: { before?: Date; limit: number; filter?: NotificationFilter }) {
@@ -59,10 +64,18 @@ export async function list(ctx: AuthContext, opts: { before?: Date; limit: numbe
   const byFilter = f === 'UNREAD' ? { readAt: null } : f === 'ALL' ? {} : { kind: { $in: [...NOTIFICATION_FILTERS[f]] } };
   const rows = await Notification.find({ userId: ctx.userId, ...byFilter, ...(opts.before ? { createdAt: { $lt: opts.before } } : {}) })
     .sort({ createdAt: -1 }).limit(opts.limit + 1).lean<NotificationDoc[]>();
-  const items = rows.slice(0, opts.limit).map((r) => ({
-    id: r._id, messageId: r.messageId, message: r.message, createdAt: r.createdAt, read: !!r.readAt,
-    link: r.linkType ? { type: r.linkType, id: r.linkId } : null,
-  }));
+  const items = rows.slice(0, opts.limit).map((r) => {
+    // Gap fix: the page shows a bold title, a grey line under it and an icon per kind of event.
+    const text = String(r.message ?? '');
+    const cut = text.search(/\.\s/); // first sentence → title, the rest → subtitle
+    return {
+      id: r._id, messageId: r.messageId, message: r.message, createdAt: r.createdAt, read: !!r.readAt,
+      link: r.linkType ? { type: r.linkType, id: r.linkId } : null,
+      kind: r.kind, category: categoryOf(r.kind),
+      title: cut > 0 ? text.slice(0, cut + 1).trim() : text,
+      subtitle: cut > 0 ? text.slice(cut + 1).trim() || null : null,
+    };
+  });
   return { items, more: rows.length > opts.limit, ...(await unreadCount(ctx)) };
 }
 

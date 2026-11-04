@@ -63,8 +63,8 @@ async function signedIn(userId: string, s: { sessionId: string; jti: string; exp
 
 // ── P-01 Register as an advisor ──────────────────────────────────────────────
 
-export const sendRegisterOtp = (b: { name: string; mobile: string }, req: Request) =>
-  issueOtp({ mobile: b.mobile, purpose: 'REGISTER', pendingName: b.name, termsVersion: env.TERMS_VERSION }, req);
+export const sendRegisterOtp = (b: { name: string; mobile: string; email?: string | null }, req: Request) =>
+  issueOtp({ mobile: b.mobile, purpose: 'REGISTER', pendingName: b.name, pendingEmail: b.email ?? null, termsVersion: env.TERMS_VERSION }, req);
 
 /**
  * P-01 step 5. (a) new number: account, advisor user, empty profile, TRIAL (CFG-78, no plan), wallet ₹0 and
@@ -90,11 +90,11 @@ export async function verifyRegister(b: { mobile: string; code: string }, req: R
       const account = await new Account({
         subscription: { plan: null, status: 'TRIAL', startsAt: now, endsAt: new Date(now.getTime() + cfgNum('CFG-78') * DAY) },
         wallet: { balancePaise: 0 },
-        profile: { termsVersion: ch.termsVersion ?? env.TERMS_VERSION, termsAcceptedAt: now },
+        profile: { termsVersion: ch.termsVersion ?? env.TERMS_VERSION, termsAcceptedAt: now, ...(ch.pendingEmail ? { contact: { email: ch.pendingEmail } } : {}) },
         pipelines: cfgList('CFG-169').map((name, i) => ({ _id: newId('pip'), name, position: i + 1 })),
       }).save({ session: session ?? undefined });
       accountId = account._id;
-      const user = await new User({ accountId: account._id, role: 'ADV', name: ch.pendingName, mobile: b.mobile, status: 'ACTIVE', activatedAt: now, lastLoginAt: now }).save({ session: session ?? undefined });
+      const user = await new User({ accountId: account._id, role: 'ADV', name: ch.pendingName, mobile: b.mobile, email: ch.pendingEmail ?? null, status: 'ACTIVE', activatedAt: now, lastLoginAt: now }).save({ session: session ?? undefined });
       const s = await startSession(user._id, req, clientOf(req), session);
       await audit({
         entity: 'account', entityId: account._id, action: 'ACCOUNT_CREATED',

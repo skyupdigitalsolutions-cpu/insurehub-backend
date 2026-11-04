@@ -365,8 +365,54 @@ export async function generate(ctx: AuthContext, id: string, req: Request) {
 
 export async function get(ctx: AuthContext, id: string) { return view(await load(ctx, id)); }
 export { view as quotationView, load as loadQuotation, context as quotationContext, check as quotationChecks, premium as quotationPremium, type Ctx as QuotationCtx };
-export async function listFor(ctx: AuthContext, customerId?: string) {
-  return (await Quotation.find({ accountId: ctx.accountId, ...(customerId ? { customerId } : {}) }).sort({ updatedAt: -1 }).limit(200).lean<QuotationDoc[]>()).map(view);
+export const QUOTATION_STATUSES = ['DRAFT', 'READY', 'SHARED', 'ACCEPTED', 'REJECTED', 'CANCELLED', 'EXPIRED'] as const;
+/**
+ * Gap fix (07L Quotations list): status filter (one or several), search by quotation number or customer name /
+ * mobile, paging, the count per status for the tabs, and the customer and product on each row.
+ * Without page/limit it still returns the newest 200 (older clients).
+ */
+export async function listFor(ctx: AuthContext, q: { customerId?: string; status?: string; search?: string; page?: number; limit?: number } = {}) {
+  const filter: Record<string, unknown> = { accountId: ctx.accountId, ...(q.customerId ? { customerId: q.customerId } : {}) };
+  if (q.search?.trim()) {
+    const text = q.search.trim();
+    const { piiSearch } = await import('../../lib/pii.js');
+    const { escapeRegex } = await import('../../lib/pagination.js');
+    const people = await Customer.find({ accountId: ctx.accountId, $or: piiSearch(text, { name: true, mobile: 4 }).concat([{ _id: null }]) }, { _id: 1 }).limit(500).lean<Array<{ _id: string }>>();
+    filter.$or = [{ number: new RegExp(escapeRegex(text), 'i') }, { customerId: { $in: people.map((p) => p._id) } }];
+  }
+  const countsRows = await Quotation.aggregate<{ _id: string; n: number }>([{ $match: filter }, { $group: { _id: '$status', n: { $sum: 1 } } }]);
+  const counts = Object.fromEntries(QUOTATION_STATUSES.map((s) => [s, countsRows.find((r) => r._id === s)?.n ?? 0]));
+  const statuses = q.status?.split(',').map((s) => s.trim()).filter(Boolean) ?? [];
+  if (statuses.length) filter.status = statuses.length === 1 ? statuses[0] : { $in: statuses };
+  const paged = q.page !== undefined || q.limit !== undefined;
+  const limit = Math.min(q.limit ?? cfgNum('CFG-23'), 100);
+  const page = q.page ?? 1;
+  const [rows, total] = await Promise.all([
+    Quotation.find(filter).sort({ updatedAt: -1 }).skip(paged ? (page - 1) * limit : 0).limit(paged ? limit : 200).lean<QuotationDoc[]>(),
+    Quotation.countDocuments(filter),
+  ]);
+  const ids = (k: 'customerId' | 'productId' | 'insurerId') => [...new Set(rows.map((r) => (k === 'customerId' ? r.customerId : (r.inputs as Record<string, string> | null)?.[k])).filter(Boolean) as string[])];
+  const [customers, prods, insurers] = await Promise.all([
+    Customer.find({ _id: { $in: ids('customerId') }, accountId: ctx.accountId }, { name: 1, number: 1, mobile: 1 }).lean<Array<{ _id: string; name: string; number: string; mobile: string }>>(),
+    Product.find({ _id: { $in: ids('productId') } }, { name: 1 }).lean<Array<{ _id: string; name: string }>>(),
+    Insurer.find({ _id: { $in: ids('insurerId') } }, { name: 1 }).lean<Array<{ _id: string; name: string }>>(),
+  ]);
+  const cm = new Map(customers.map((c) => [c._id, c])); const pm = new Map(prods.map((p) => [p._id, p.name])); const im = new Map(insurers.map((i) => [i._id, i.name]));
+  const items = rows.map((r) => {
+    const v = view(r);
+    const c = cm.get(r.customerId);
+    const inp = (r.inputs as Record<string, string> | null) ?? {};
+    const last = v.revisions.at(-1);
+    return {
+      ...v,
+      customer: c ? { id: c._id, name: c.name, number: c.number, mobile: c.mobile } : null,
+      productName: inp.productId ? pm.get(inp.productId) ?? null : null,
+      insurerName: inp.insurerId ? im.get(inp.insurerId) ?? null : null,
+      premium: last?.final ?? (r.calc as { breakdown?: Breakdown } | null)?.breakdown?.final ?? null,
+      validUntil: last?.validUntil ?? null,
+    };
+  });
+  return { items, meta: { page, limit: paged ? limit : 200, total, pages: paged ? Math.max(1, Math.ceil(total / limit)) : 1, counts } };
 }
 /** The frozen snapshot of a revision (what the PDF shows). */
 export async function snapshot(ctx: AuthContext, id: string, revision: number) {

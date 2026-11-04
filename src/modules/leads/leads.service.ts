@@ -21,7 +21,7 @@ import type { CustomerExtras } from '../customers/customers.schemas.js';
 import { can, type AuthContext } from '../rbac/capabilities.js';
 import { Task } from '../tasks/task.model.js';
 import { User } from '../users/user.model.js';
-import { Lead, OUTCOME_LABEL, type LeadDoc } from './lead.model.js';
+import { CHANNEL_LABEL, Lead, OUTCOME_LABEL, type LeadDoc } from './lead.model.js';
 import { CONVERTIBLE, STATUS_LABEL, advisorOnly, allowedMoves, canConvert, canMove, type LeadStatus } from './leadStatus.js';
 
 type FieldErr = { field: string; messageId: MessageId; params?: MessageParams };
@@ -38,6 +38,8 @@ function summary(l: LeadDoc, ctx: AuthContext) {
   return {
     id: l._id, number: l.number, pipelineId: l.pipelineId, name: l.name, mobile: l.mobile, source: l.source, sourceCode: codeOfLead(l), priority: l.priority,
     status: l.status, statusLabel: STATUS_LABEL[l.status as LeadStatus], nextFollowUpAt: l.nextFollowUpAt, customerId: l.customerId,
+    // Gap fix: the board card shows the lead's note and interests
+    notes: l.notes ?? null, interests: l.interests ?? [], campaign: l.campaign ?? null,
     createdAt: l.createdAt, version: l.version,
     allowedMoves: allowedMoves(l.status as LeadStatus, ctx.role), canConvert: canConvert(l.status as LeadStatus, ctx.role),
   };
@@ -50,7 +52,7 @@ async function detail(l: LeadDoc, ctx: AuthContext) {
     Account.findById(l.accountId, { pipelines: 1 }).lean(),
     l.referredByCustomerId ? Customer.findOne({ _id: l.referredByCustomerId, accountId: l.accountId }, { number: 1, name: 1 }).lean() : null,
     l.customerId ? Customer.findOne({ _id: l.customerId, accountId: l.accountId }, { number: 1, name: 1 }).lean() : null,
-    Task.findOne({ linkedId: l._id, kind: 'LEAD_FOLLOW_UP', status: 'OPEN' }, { dueAt: 1, title: 1 }).lean(),
+    Task.findOne({ linkedId: l._id, kind: 'LEAD_FOLLOW_UP', status: 'OPEN' }, { dueAt: 1, title: 1, version: 1 }).lean(),
   ]);
   const name = (id?: string | null) => (id ? users.find((u) => u._id === id)?.name ?? null : null);
   return {
@@ -62,9 +64,14 @@ async function detail(l: LeadDoc, ctx: AuthContext) {
     lostReason: l.lostReason, lostNote: l.lostNote, convertedAt: l.convertedAt,
     customer: customer ? { id: customer._id, number: customer.number, name: customer.name } : null,
     createdBy: name(l.createdBy), updatedAt: l.updatedAt,
-    followUpTask: task ? { id: task._id, dueAt: task.dueAt, title: task.title } : null,
+    // Gap fix: the version lets the screen mark the follow-up done (POST /tasks/:id/done) without another read
+    followUpTask: task ? { id: task._id, dueAt: task.dueAt, title: task.title, version: task.version } : null,
     // AC-P13-5: the timeline shows every contact and status change in order (newest first here).
-    contacts: [...l.contacts].reverse().map((c) => ({ id: c._id, outcome: c.outcome, outcomeLabel: OUTCOME_LABEL[c.outcome as keyof typeof OUTCOME_LABEL], note: c.note, at: c.at, by: name(c.by) })),
+    contacts: [...l.contacts].reverse().map((c) => ({
+      id: c._id, outcome: c.outcome, outcomeLabel: OUTCOME_LABEL[c.outcome as keyof typeof OUTCOME_LABEL],
+      channel: (c as { channel?: string | null }).channel ?? null, channelLabel: CHANNEL_LABEL[(c as { channel?: keyof typeof CHANNEL_LABEL }).channel as keyof typeof CHANNEL_LABEL] ?? null,
+      note: c.note, at: c.at, by: name(c.by),
+    })),
     stageHistory: [...l.stageHistory].reverse().map((h) => ({ ...h, fromLabel: h.from ? STATUS_LABEL[h.from as LeadStatus] : null, toLabel: STATUS_LABEL[h.to as LeadStatus], by: name(h.by) })),
   };
 }
@@ -369,13 +376,13 @@ export async function changeStatus(ctx: AuthContext, id: string, b: { version: n
 }
 
 /** Log contact (P-13 step 2): outcome required, note optional; added to the timeline with date and time. */
-export async function logContact(ctx: AuthContext, id: string, b: { outcome: string; note?: string | null }, req: Request) {
+export async function logContact(ctx: AuthContext, id: string, b: { outcome: string; channel?: string | null; note?: string | null }, req: Request) {
   const l = await loadLead(ctx, id);
   await assertNotConverted(l);
-  const contact = { _id: newId('act'), outcome: b.outcome, note: b.note ?? null, at: clock.now(), by: ctx.userId };
+  const contact = { _id: newId('act'), outcome: b.outcome, channel: b.channel ?? null, note: b.note ?? null, at: clock.now(), by: ctx.userId };
   await withTx(async (session) => {
     await Lead.updateOne({ _id: id, accountId: l.accountId }, { $push: { contacts: contact } }, { session: session ?? undefined });
-    await audit({ entity: RECORD, entityId: id, entityRef: l.number, action: 'LEAD_CONTACT_LOGGED', after: { outcome: b.outcome, note: b.note ?? null } }, { req, session });
+    await audit({ entity: RECORD, entityId: id, entityRef: l.number, action: 'LEAD_CONTACT_LOGGED', after: { outcome: b.outcome, channel: b.channel ?? null, note: b.note ?? null } }, { req, session });
   });
   return getLead(ctx, id);
 }
@@ -472,8 +479,8 @@ export async function timeline(ctx: AuthContext, id: string, types?: string[]) {
   const accountId = accountOf(ctx);
   type Item = { type: string; at: Date; title: string; detail?: string | null; by?: string | null; refId?: string | null };
   const items: Item[] = [];
-  if (want('CONTACT')) for (const c of lead.contacts ?? []) items.push({ type: 'CONTACT', at: c.at, title: c.outcome, detail: c.note ?? null, by: c.by, refId: c._id });
-  if (want('STATUS')) for (const h of lead.stageHistory ?? []) items.push({ type: 'STATUS', at: h.at, title: h.from ? `${h.from} → ${h.to}` : `Created as ${h.to}`, by: h.by ?? null });
+  if (want('CONTACT')) for (const c of lead.contacts ?? []) items.push({ type: 'CONTACT', at: c.at, title: OUTCOME_LABEL[c.outcome as keyof typeof OUTCOME_LABEL] ?? c.outcome, detail: c.note ?? null, by: c.by, refId: c._id, channel: (c as { channel?: string | null }).channel ?? null } as Item);
+  if (want('STATUS')) for (const h of lead.stageHistory ?? []) items.push({ type: 'STATUS', at: h.at, title: h.from ? `${STATUS_LABEL[h.from as LeadStatus] ?? h.from} → ${STATUS_LABEL[h.to as LeadStatus] ?? h.to}` : `Created as ${STATUS_LABEL[h.to as LeadStatus] ?? h.to}`, by: h.by ?? null });
   const { Task } = await import('../tasks/task.model.js');
   if (want('TASK') || want('FOLLOW_UP')) {
     const tasks = await Task.find({ accountId, linkedType: 'LEAD', linkedId: lead._id }, { title: 1, dueAt: 1, status: 1, kind: 1, createdBy: 1 }).lean<Array<{ _id: string; title: string; dueAt: Date; status: string; kind: string; createdBy: string | null }>>();
@@ -499,6 +506,10 @@ export async function timeline(ctx: AuthContext, id: string, types?: string[]) {
     for (const c of calls) items.push({ type: 'CALL', at: c.at, title: `Call (${c.callType})`, detail: `${c.durationSec} s`, by: c.userId, refId: c._id });
   }
   items.sort((a, b) => b.at.getTime() - a.at.getTime());
+  // Gap fix: "by" was a user id; now the person's name (byUserId keeps the id).
+  const byIds = [...new Set(items.map((i) => i.by).filter(Boolean) as string[])];
+  const people = new Map((await User.find({ _id: { $in: byIds } }, { name: 1 }).lean<Array<{ _id: string; name: string }>>()).map((u) => [u._id, u.name]));
+  for (const i of items as Array<Item & { byUserId?: string | null }>) { i.byUserId = i.by ?? null; i.by = i.by ? people.get(i.by) ?? null : null; }
   const activity = [...(lead.contacts ?? []).map((c) => c.at.getTime()), ...(lead.stageHistory ?? []).map((h) => h.at.getTime()), new Date(lead.updatedAt ?? lead.createdAt).getTime()];
   return {
     items,

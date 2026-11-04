@@ -43,8 +43,16 @@ const inputs = z.object({
 export function quotationRoutes() {
   const r = Router();
   r.use(authenticate, allow('quotations.work'));
-  r.get('/', validate({ query: z.object({ customerId: z.string().regex(/^cus_[a-f0-9]{28}$/).optional() }) }), async (req, res) =>
-    sendData(res, await svc.listFor(req.auth!, req.query.customerId ? String(req.query.customerId) : undefined)));
+  r.get('/', validate({ query: z.object({
+    customerId: z.string().regex(/^cus_[a-f0-9]{28}$/).optional(),
+    status: z.string().max(120).refine((v) => v.split(',').every((s) => (svc.QUOTATION_STATUSES as readonly string[]).includes(s.trim())), { message: 'VAL-22' }).optional(),
+    search: z.string().trim().max(100).optional(),
+    page: z.coerce.number().int().min(1).max(10_000).optional(),
+    limit: z.coerce.number().int().min(1).max(100).optional(),
+  }) }), async (req, res) => {
+    const { items, meta } = await svc.listFor(req.auth!, res.locals.query);
+    sendData(res, items, 200, meta);
+  });
   r.get('/choices', validate({ query: z.object({ typeId: z.string().optional(), insurerId: z.string().optional() }) }), async (req, res) =>
     sendData(res, await svc.choices(req.auth!, req.query.typeId ? String(req.query.typeId) : undefined, req.query.insurerId ? String(req.query.insurerId) : undefined)));
   r.post('/', writable, validate({ body: z.object({ customerId: required(z.string().regex(/^cus_[a-f0-9]{28}$/)) }).strict() }, labels), idempotent(), async (req, res) =>

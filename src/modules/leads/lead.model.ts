@@ -5,6 +5,9 @@ import { LEAD_STATUSES } from './leadStatus.js';
 import { protect, searchIndexFields } from '../../lib/pii.js';
 
 export const CONTACT_OUTCOMES = ['SPOKE_TO_CUSTOMER', 'NOT_REACHABLE', 'ASKED_TO_CALL_BACK'] as const;
+/** Gap fix: how the contact happened (LS2 "How did you contact them?"). Optional; older rows have none. */
+export const CONTACT_CHANNELS = ['CALL', 'WHATSAPP', 'EMAIL', 'MEETING'] as const;
+export const CHANNEL_LABEL = { CALL: 'Call', WHATSAPP: 'WhatsApp', EMAIL: 'Email', MEETING: 'Meeting' } as const;
 export const OUTCOME_LABEL = { SPOKE_TO_CUSTOMER: 'Spoke to customer', NOT_REACHABLE: 'Not reachable', ASKED_TO_CALL_BACK: 'Asked to call back' } as const;
 export const PRIORITIES = ['HIGH', 'MEDIUM', 'LOW'] as const;
 
@@ -18,6 +21,7 @@ const stageSchema = new Schema(
 const contactSchema = new Schema({
   _id: { type: String, default: () => newId('act') },
   outcome: { type: String, enum: CONTACT_OUTCOMES, required: true },
+  channel: { type: String, enum: [...CONTACT_CHANNELS, null], default: null },
   note: { type: String, default: null },
   at: { type: Date, required: true },
   by: { type: String, required: true },
