@@ -169,4 +169,17 @@ export async function decline(ctx: AuthContext, id: string, b: { version: number
 }
 
 export async function get(ctx: AuthContext, id: string) { const p = await load(ctx, id); return { ...view(p), readiness: await readiness(ctx, id) }; }
-export async function list(ctx: AuthContext) { return (await Proposal.find({ accountId: ctx.accountId }).sort({ updatedAt: -1 }).limit(200).lean<ProposalDoc[]>()).map(view); }
+/** Gap fix (Proposals list): customer, quotation number, product, insurer and premium on every row (from the frozen quotation). */
+export async function list(ctx: AuthContext) {
+  const rows = await Proposal.find({ accountId: ctx.accountId }).sort({ updatedAt: -1 }).limit(200).lean<ProposalDoc[]>();
+  const quotes = new Map((await Quotation.find({ _id: { $in: rows.map((r) => r.quotationId) } }, { revisions: 1, number: 1 }).lean<QuotationDoc[]>()).map((q) => [q._id, q]));
+  return rows.map((p) => {
+    const q = quotes.get(p.quotationId);
+    const s = q?.revisions.find((r) => r.revision === p.revision)?.snapshot as (Snap & { product: { variantName?: string | null } }) | undefined;
+    return {
+      ...view(p), updatedAt: (p as { updatedAt?: Date }).updatedAt ?? null,
+      quotationNumber: q?.number ?? s?.number ?? null, customer: s ? { id: s.customer.id, name: s.customer.name } : null,
+      productName: s?.product.name ?? null, variantName: s?.product.variantName ?? null, insurer: s?.insurer.name ?? null, premium: s?.breakdown.final ?? null,
+    };
+  });
+}

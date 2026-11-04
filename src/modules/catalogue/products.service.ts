@@ -14,6 +14,7 @@ import { hasReference } from './prices.service.js';
 import { ocrMarksFor } from './ocr.service.js';
 import { assertVisibleInsurer, assertVisibleType } from './private.service.js';
 import { ProductVariant, defaultVariantFor } from './variant.model.js';
+import { InsurerMapping } from '../insurers/mapping.model.js';
 import { asInput, checkVariants, copyVariants, missingOnVariants, normaliseCustomFeatures, variantsOf, writeVariants, type CustomFeature, type FeatureValue, type VariantInput } from './variants.service.js';
 
 /** The product version's values (validated field by field on the route; completeness is checked on submit). */
@@ -345,11 +346,24 @@ export async function advisorList(ctx: AuthContext, opts: { typeId?: string; quo
   if (opts.typeId) f.typeId = opts.typeId;
   const rows = await Product.find(f).sort({ name: 1 }).limit(1000).lean<ProductDoc[]>();
   const n = await names(rows.map((r) => r.insurerId), rows.map((r) => r.typeId));
+  // Gap fix (10 · Products library): variants on each card, and whether *this advisor* can quote it (agent code).
+  const [variantRows, maps] = await Promise.all([
+    ProductVariant.find({ productVersionId: { $in: rows.map((r) => r.publishedVersionId).filter(Boolean) } }, { productVersionId: 1, name: 1, position: 1, isDefault: 1 }).sort({ position: 1 }).lean<Array<{ productVersionId: string; name: string; isDefault?: boolean }>>(),
+    InsurerMapping.find({ accountId: ctx.accountId }, { insurerId: 1, status: 1, validUntil: 1 }).lean<Array<{ insurerId: string; status: string; validUntil: string | null }>>(),
+  ]);
+  const today = new Date(Date.now() + 5.5 * 3_600_000).toISOString().slice(0, 10);
+  const codeOf = new Map(maps.map((m) => [m.insurerId, m.status !== 'ACTIVE' ? 'INACTIVE' : m.validUntil && m.validUntil < today ? 'EXPIRED' : 'ACTIVE']));
   const out = rows.map((p) => {
     const status = effectiveStatus(p);
     const ins = n.ins.get(p.insurerId); const typ = n.typ.get(p.typeId);
     const quotable = status === 'ACTIVE' && ins?.status === 'ACTIVE' && typ?.status === 'ACTIVE';
-    return { id: p._id, kind: p.kind, code: p.code, name: p.name, status, insurerId: p.insurerId, typeId: p.typeId, insurer: ins?.name ?? null, type: typ?.name ?? null, quotable, renewalOnly: status === 'WITHDRAWN' };
+    const vs = variantRows.filter((v) => v.productVersionId === p.publishedVersionId);
+    const agentCode = codeOf.get(p.insurerId) ?? 'MISSING';
+    return {
+      id: p._id, kind: p.kind, code: p.code, name: p.name, status, insurerId: p.insurerId, typeId: p.typeId, insurer: ins?.name ?? null, type: typ?.name ?? null, quotable, renewalOnly: status === 'WITHDRAWN',
+      variantCount: vs.length, defaultVariant: (vs.find((v) => v.isDefault) ?? vs[0])?.name ?? null, variants: vs.map((v) => v.name),
+      agentCode, canQuote: quotable && agentCode === 'ACTIVE',
+    };
   });
   return opts.quotableOnly ? out.filter((p) => p.quotable) : out; // AC-P22-4 / AC-P25-4
 }

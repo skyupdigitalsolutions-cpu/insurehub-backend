@@ -277,5 +277,13 @@ export async function get(ctx: AuthContext, id: string) { return view(ctx, await
 export async function list(ctx: AuthContext, q: { status?: string; customerId?: string }) {
   const rows = await Policy.find({ accountId: ctx.accountId, ...(q.status ? { status: q.status } : {}), ...(q.customerId ? { customerId: q.customerId } : {}) }).sort({ updatedAt: -1 }).limit(300).lean<PolicyDoc[]>();
   const names = new Map((await Customer.find({ _id: { $in: rows.map((r) => r.customerId) } }, { name: 1 }).lean<Array<{ _id: string; name: string }>>()).map((c) => [c._id, c.name]));
-  return rows.map((r) => ({ id: r._id, customerId: r.customerId, customer: names.get(r.customerId) ?? '', status: r.status, source: r.source, policyNumber: r.policyNumber, productName: r.productName, endDate: r.endDate, premium: r.premium, createdAt: r.createdAt }));
+  // Gap fix (11 · Policies): insurer, dates, sum insured and the renewal stage for the list and its stat tiles.
+  const insurers = new Map((await Insurer.find({ _id: { $in: rows.map((r) => r.insurerId).filter(Boolean) } }, { name: 1 }).lean<Array<{ _id: string; name: string }>>()).map((i) => [i._id, i.name]));
+  const cycles = new Map((await RenewalCycle.find({ policyId: { $in: rows.map((r) => r._id) } }, { policyId: 1, status: 1, dueDate: 1 }).sort({ createdAt: 1 }).lean<Array<{ policyId: string; status: string; dueDate: string }>>()).map((c) => [c.policyId, c]));
+  return rows.map((r) => ({
+    id: r._id, customerId: r.customerId, customer: names.get(r.customerId) ?? '', status: r.status, source: r.source, policyNumber: r.policyNumber, productName: r.productName,
+    endDate: r.endDate, premium: r.premium, createdAt: r.createdAt,
+    insurer: r.insurerId ? insurers.get(r.insurerId) ?? null : null, startDate: r.startDate, sumInsured: r.sumInsured, frequency: r.frequency, proposalId: r.proposalId, quotationId: r.quotationId,
+    renewal: cycles.get(r._id) ? { status: cycles.get(r._id)!.status, dueDate: cycles.get(r._id)!.dueDate } : null,
+  }));
 }
