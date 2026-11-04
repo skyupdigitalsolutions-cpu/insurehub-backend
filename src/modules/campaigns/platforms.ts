@@ -7,18 +7,19 @@ export class ReconnectNeeded extends Error {}
 export class PlatformError extends Error {}
 
 export const metaConfig = () => ({ appId: process.env.META_APP_ID ?? '', appSecret: process.env.META_APP_SECRET ?? '', verifyToken: process.env.META_VERIFY_TOKEN ?? '', version: process.env.META_GRAPH_VERSION ?? 'v22.0' });
+export const googleConfig = () => ({ clientId: process.env.GOOGLE_OAUTH_CLIENT_ID ?? '', clientSecret: process.env.GOOGLE_OAUTH_CLIENT_SECRET ?? '', developerToken: process.env.GOOGLE_ADS_DEVELOPER_TOKEN ?? '', loginCustomerId: (process.env.GOOGLE_ADS_LOGIN_CUSTOMER_ID ?? '').replace(/-/g, ''), version: process.env.GOOGLE_ADS_API_VERSION ?? 'v25' });
 export const linkedinConfig = () => ({ clientId: process.env.LINKEDIN_CLIENT_ID ?? '', clientSecret: process.env.LINKEDIN_CLIENT_SECRET ?? '', version: process.env.LINKEDIN_API_VERSION ?? '202609' });
-export const isConfigured = (channel: 'META' | 'LINKEDIN') => (channel === 'META' ? !!(metaConfig().appId && metaConfig().appSecret && metaConfig().verifyToken) : !!(linkedinConfig().clientId && linkedinConfig().clientSecret));
-export const redirectUri = (channel: 'META' | 'LINKEDIN') => `${process.env.PUBLIC_API_URL ?? 'http://localhost:4000'}/v1/hooks/oauth/${channel.toLowerCase()}/callback`;
+export const isConfigured = (channel: 'META' | 'LINKEDIN' | 'GOOGLE') => (channel === 'META' ? !!(metaConfig().appId && metaConfig().appSecret && metaConfig().verifyToken) : channel === 'GOOGLE' ? !!(googleConfig().clientId && googleConfig().clientSecret && googleConfig().developerToken) : !!(linkedinConfig().clientId && linkedinConfig().clientSecret));
+export const redirectUri = (channel: 'META' | 'LINKEDIN' | 'GOOGLE') => `${process.env.PUBLIC_API_URL ?? 'http://localhost:4000'}/v1/hooks/oauth/${channel.toLowerCase()}/callback`;
 
-async function call(url: string, init: RequestInit & { channel: 'META' | 'LINKEDIN' }) {
+async function call(url: string, init: RequestInit & { channel: 'META' | 'LINKEDIN' | 'GOOGLE' }) {
   const r = await fetch(url, { ...init, signal: AbortSignal.timeout(15_000) });
   const text = await r.text();
   let j: Record<string, any> = {};
   try { j = text ? JSON.parse(text) : {}; } catch { j = { raw: text.slice(0, 200) }; }
   if (r.ok) return { json: j, headers: r.headers };
   const code = j?.error?.code;
-  if ((init.channel === 'META' && (code === 190 || code === 102 || r.status === 401)) || (init.channel === 'LINKEDIN' && (r.status === 401 || r.status === 403 && /token|expired|revoked/i.test(text)))) throw new ReconnectNeeded(j?.error?.message ?? j?.message ?? `HTTP ${r.status}`);
+  if ((init.channel === 'META' && (code === 190 || code === 102 || r.status === 401)) || (init.channel === 'LINKEDIN' && (r.status === 401 || r.status === 403 && /token|expired|revoked/i.test(text))) || (init.channel === 'GOOGLE' && (r.status === 401 || j?.error === 'invalid_grant'))) throw new ReconnectNeeded(j?.error?.message ?? j?.message ?? `HTTP ${r.status}`);
   throw new PlatformError(j?.error?.message ?? j?.message ?? `HTTP ${r.status}`);
 }
 
@@ -45,10 +46,10 @@ export const meta = {
     return ((j.data ?? []) as Array<{ id: string; name: string; status: string }>).map((f) => ({ id: String(f.id), name: String(f.name), status: String(f.status ?? '') }));
   },
   /** One lead with its answers and ad attribution (ported from the previous CRM). */
-  lead: async (leadgenId: string, pageToken: string) => (await call(`${graph(leadgenId)}?${qs({ fields: 'id,created_time,field_data,form_id,ad_id,ad_name,adset_name,campaign_name,is_organic,platform', access_token: pageToken })}`, { channel: 'META' })).json,
+  lead: async (leadgenId: string, pageToken: string) => (await call(`${graph(leadgenId)}?${qs({ fields: 'id,created_time,field_data,form_id,ad_id,ad_name,adset_id,adset_name,campaign_id,campaign_name,is_organic,platform', access_token: pageToken })}`, { channel: 'META' })).json,
   /** Catch-up: the form's leads created after `since` (seconds). */
   async formLeads(formId: string, pageToken: string, sinceSec: number) {
-    const j = (await call(`${graph(`${formId}/leads`)}?${qs({ fields: 'id,created_time,field_data,form_id,ad_id,ad_name,adset_name,campaign_name,is_organic', limit: '100', filtering: JSON.stringify([{ field: 'time_created', operator: 'GREATER_THAN', value: sinceSec }]), access_token: pageToken })}`, { channel: 'META' })).json;
+    const j = (await call(`${graph(`${formId}/leads`)}?${qs({ fields: 'id,created_time,field_data,form_id,ad_id,ad_name,adset_id,adset_name,campaign_id,campaign_name,is_organic', limit: '100', filtering: JSON.stringify([{ field: 'time_created', operator: 'GREATER_THAN', value: sinceSec }]), access_token: pageToken })}`, { channel: 'META' })).json;
     return (j.data ?? []) as Array<Record<string, any>>;
   },
 };
@@ -90,3 +91,60 @@ export function linkedinAnswers(r: Record<string, any>) {
     return { key, label: String(q.label ?? q.name ?? key).slice(0, 120), value: String(value).slice(0, 2000) };
   });
 }
+
+// ── Stage H: campaign status and spend ──
+/** Meta effective_status → our platform status (Active, In review, Paused, Not approved, Ended). */
+export function metaStatus(c: { effective_status?: string; stop_time?: string | null }): { status: 'ACTIVE' | 'IN_REVIEW' | 'PAUSED' | 'NOT_APPROVED' | 'ENDED'; reason: string | null } {
+  const e = String(c.effective_status ?? '').toUpperCase();
+  if (c.stop_time && Date.parse(c.stop_time) < Date.now()) return { status: 'ENDED', reason: 'Past its end date' };
+  if (['DELETED', 'ARCHIVED'].includes(e)) return { status: 'ENDED', reason: e.toLowerCase() };
+  if (['DISAPPROVED', 'WITH_ISSUES'].includes(e)) return { status: 'NOT_APPROVED', reason: e === 'WITH_ISSUES' ? 'Has issues to fix in Meta Ads Manager' : 'Disapproved by Meta' };
+  if (['IN_PROCESS', 'PENDING_REVIEW', 'PREAPPROVED', 'PENDING_BILLING_INFO'].includes(e)) return { status: 'IN_REVIEW', reason: e === 'PENDING_BILLING_INFO' ? 'Waiting for billing details' : null };
+  if (e.includes('PAUSED')) return { status: 'PAUSED', reason: null };
+  return { status: 'ACTIVE', reason: null };
+}
+export const metaCampaigns = {
+  /** One campaign: name, delivery status, dates, and lifetime spend with the ad account's currency. */
+  get: async (campaignId: string, userToken: string) => (await call(`${graph(campaignId)}?${qs({ fields: 'id,name,effective_status,start_time,stop_time,insights.date_preset(maximum){spend,account_currency}', access_token: userToken })}`, { channel: 'META' })).json,
+};
+
+/** Google effective state: primary_status first (it reflects review and eligibility), then status, then end date. */
+export function googleStatus(c: { status?: string; primaryStatus?: string; endDate?: string | null }): { status: 'ACTIVE' | 'IN_REVIEW' | 'PAUSED' | 'NOT_APPROVED' | 'ENDED'; reason: string | null } {
+  const st = String(c.status ?? '').toUpperCase(); const ps = String(c.primaryStatus ?? '').toUpperCase();
+  if (st === 'REMOVED' || ps === 'REMOVED' || ps === 'ENDED' || (c.endDate && c.endDate < new Date().toISOString().slice(0, 10))) return { status: 'ENDED', reason: null };
+  if (st === 'PAUSED' || ps === 'PAUSED') return { status: 'PAUSED', reason: null };
+  if (ps === 'PENDING') return { status: 'IN_REVIEW', reason: null };
+  if (ps === 'NOT_ELIGIBLE') return { status: 'NOT_APPROVED', reason: 'Not eligible to serve' };
+  return { status: 'ACTIVE', reason: ps === 'LIMITED' ? 'Limited' : null };
+}
+const gads = (path: string) => `https://googleads.googleapis.com/${googleConfig().version}/${path}`;
+const gHeaders = (accessToken: string) => ({ Authorization: `Bearer ${accessToken}`, 'developer-token': googleConfig().developerToken, 'Content-Type': 'application/json', ...(googleConfig().loginCustomerId ? { 'login-customer-id': googleConfig().loginCustomerId } : {}) });
+export const google = {
+  /** Sign in for campaign status and spend (leads keep arriving by the lead-form webhook). Offline access gives a refresh token. */
+  authUrl: (state: string) => `https://accounts.google.com/o/oauth2/v2/auth?${qs({ client_id: googleConfig().clientId, redirect_uri: redirectUri('GOOGLE'), response_type: 'code', scope: 'https://www.googleapis.com/auth/adwords', access_type: 'offline', prompt: 'consent', state })}`,
+  async exchange(code: string) {
+    const c = googleConfig();
+    const j = (await call('https://oauth2.googleapis.com/token', { channel: 'GOOGLE', method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: qs({ grant_type: 'authorization_code', code, client_id: c.clientId, client_secret: c.clientSecret, redirect_uri: redirectUri('GOOGLE') }) })).json;
+    if (!j.refresh_token) throw new ReconnectNeeded('Google did not return offline access; sign in again');
+    return { refreshToken: String(j.refresh_token), accessToken: String(j.access_token) };
+  },
+  /** Access tokens last about an hour: a fresh one per sync from the stored refresh token. */
+  async access(refreshToken: string) {
+    const c = googleConfig();
+    return String((await call('https://oauth2.googleapis.com/token', { channel: 'GOOGLE', method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: qs({ grant_type: 'refresh_token', refresh_token: refreshToken, client_id: c.clientId, client_secret: c.clientSecret }) })).json.access_token);
+  },
+  async customers(accessToken: string) {
+    const j = (await call(gads('customers:listAccessibleCustomers'), { channel: 'GOOGLE', headers: gHeaders(accessToken) })).json;
+    return ((j.resourceNames ?? []) as string[]).map((r) => { const id = r.split('/').pop()!; return { id, name: `Google Ads ${id.replace(/(\d{3})(\d{3})(\d{4})/, '$1-$2-$3')}` }; });
+  },
+  /** Every campaign with status, dates, lifetime cost and the account currency (no date filter: all-time metrics). */
+  async campaigns(customerId: string, accessToken: string) {
+    const query = 'SELECT campaign.id, campaign.name, campaign.status, campaign.primary_status, campaign.start_date, campaign.end_date, metrics.cost_micros, customer.currency_code FROM campaign';
+    const j = (await call(gads(`customers/${customerId}/googleAds:search`), { channel: 'GOOGLE', method: 'POST', headers: gHeaders(accessToken), body: JSON.stringify({ query }) })).json;
+    return ((j.results ?? []) as Array<Record<string, any>>).map((r) => ({
+      id: String(r.campaign?.id), name: String(r.campaign?.name ?? ''), status: r.campaign?.status, primaryStatus: r.campaign?.primaryStatus,
+      startDate: r.campaign?.startDate ?? null, endDate: r.campaign?.endDate ?? null,
+      spend: r.metrics?.costMicros !== undefined ? Math.round(Number(r.metrics.costMicros) / 10_000) / 100 : null, currency: r.customer?.currencyCode ?? null,
+    }));
+  },
+};

@@ -135,6 +135,7 @@ export async function ingest(conn: ConnectionDoc, b: { externalId: string; formE
 /** Import one stored submission. Safe to run again (Retry): an IMPORTED or LINKED one is left as it is. */
 export async function processSubmission(id: string): Promise<SubmissionDoc> {
   const s = await Submission.findById(id).lean<SubmissionDoc>();
+  if (s && ['META', 'GOOGLE'].includes(s.channel)) await (await import('./campaigns.analytics.js')).linkCampaign(s).catch(() => undefined); // Stage H
   if (!s || ['IMPORTED', 'LINKED'].includes(s.status)) return s!;
   const done = async (status: string, set: Record<string, unknown> = {}) => (await Submission.findOneAndUpdate({ _id: id }, { $set: { status, ...set }, $inc: { attempts: 1 } }, { new: true }).lean<SubmissionDoc>())!;
   try {
@@ -258,25 +259,27 @@ import { createHmac as hmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import { decryptField, encryptField } from '../../lib/crypto.js';
 import { WebhookEvent } from '../comms/outbox.model.js';
 import { JobRun } from '../renewals/renewal.model.js';
-import { ReconnectNeeded, isConfigured, linkedin, linkedinAnswers, linkedinConfig, meta, metaAnswers, metaConfig } from './platforms.js';
+import { ReconnectNeeded, google, isConfigured, linkedin, linkedinAnswers, linkedinConfig, meta, metaAnswers, metaConfig } from './platforms.js';
 
-type Social = 'META' | 'LINKEDIN';
+type Social = 'META' | 'LINKEDIN' | 'GOOGLE';
 const stateKey = () => `${env.WEBHOOK_SECRET}:oauth-state`;
 
 /** Start sign-in: a signed, single-use, 10-minute state (CMP-08 while switched off; CMP-10 if the app is not set up yet). */
-export async function oauthStart(ctx: AuthContext, channel: Social) {
+export async function oauthStart(ctx: AuthContext, channel: Social, connectionId?: string) {
   if (!channelOn(channel, ctx.accountId!)) throw new AppError(409, 'INVALID_STATE', 'CMP-08', { channel: LABEL[channel] });
   if (!isConfigured(channel)) throw new AppError(409, 'INVALID_STATE', 'CMP-10', { channel: LABEL[channel] });
-  const body = Buffer.from(JSON.stringify({ a: ctx.accountId, u: ctx.userId, c: channel, n: randomUUID(), e: clock.now().getTime() + 10 * 60_000 })).toString('base64url');
+  // Google: the sign-in adds status and spend to an existing Google lead-form connection (leads arrive by its webhook)
+  if (channel === 'GOOGLE' && !(connectionId && (await Connection.exists({ _id: connectionId, accountId: ctx.accountId, channel: 'GOOGLE' })))) throw AppError.field('connectionId', 'CMP-15');
+  const body = Buffer.from(JSON.stringify({ a: ctx.accountId, u: ctx.userId, c: channel, x: connectionId ?? null, n: randomUUID(), e: clock.now().getTime() + 10 * 60_000 })).toString('base64url');
   const state = `${body}.${hmac('sha256', stateKey()).update(body).digest('base64url')}`;
-  return { url: channel === 'META' ? meta.authUrl(state) : linkedin.authUrl(state) };
+  return { url: channel === 'META' ? meta.authUrl(state) : channel === 'GOOGLE' ? google.authUrl(state) : linkedin.authUrl(state) };
 }
 async function readState(state: string, channel: Social) {
   const [body, sig] = String(state).split('.');
   if (!body || !sig) throw AppError.forbidden();
   const want = hmac('sha256', stateKey()).update(body).digest('base64url');
   if (sig.length !== want.length || !timingSafeEqual(Buffer.from(sig), Buffer.from(want))) throw AppError.forbidden();
-  const s = JSON.parse(Buffer.from(body, 'base64url').toString()) as { a: string; u: string; c: string; n: string; e: number };
+  const s = JSON.parse(Buffer.from(body, 'base64url').toString()) as { a: string; u: string; c: string; x?: string | null; n: string; e: number };
   if (s.c !== channel || s.e < clock.now().getTime()) throw AppError.forbidden();
   try { await WebhookEvent.create({ _id: `oauth|${s.n}`, source: 'oauth', at: clock.now() }); } catch (e) { if (isDuplicateKey(e)) throw AppError.forbidden(); throw e; } // single use
   return s;
@@ -287,12 +290,15 @@ async function readState(state: string, channel: Social) {
  */
 export async function oauthCallback(channel: Social, code: string, state: string) {
   const s = await readState(state, channel);
-  const t = channel === 'META' ? await meta.exchange(code) : await linkedin.exchange(code);
-  const list = channel === 'META' ? (await meta.pages(t.token)).map((p) => ({ id: p.id, name: p.name })) : await linkedin.adAccounts(t.token);
-  const existing = await Connection.findOne({ accountId: s.a, channel }).lean<ConnectionDoc>();
+  let t: { token: string; expiresIn: number | null };
+  let list: Array<{ id: string; name: string }>;
+  if (channel === 'GOOGLE') { const g = await google.exchange(code); t = { token: g.refreshToken, expiresIn: null }; list = await google.customers(g.accessToken); } // the refresh token is what is kept
+  else { t = channel === 'META' ? await meta.exchange(code) : await linkedin.exchange(code); list = channel === 'META' ? (await meta.pages(t.token)).map((p) => ({ id: p.id, name: p.name })) : await linkedin.adAccounts(t.token); }
+  const existing = channel === 'GOOGLE' ? await Connection.findOne({ _id: s.x, accountId: s.a, channel }).lean<ConnectionDoc>() : await Connection.findOne({ accountId: s.a, channel }).lean<ConnectionDoc>();
+  if (channel === 'GOOGLE' && !existing) throw AppError.forbidden();
   const keep = new Map((existing?.sources ?? []).map((x) => [x.id, x]));
   const sources = list.map((x) => ({ id: x.id, name: x.name, tokenEnc: keep.get(x.id)?.tokenEnc ?? null, subscribed: keep.get(x.id)?.subscribed ?? false }));
-  const set = { status: 'CONNECTED', tokenEnc: encryptField(t.token), tokenExpiresAt: t.expiresIn ? new Date(clock.now().getTime() + t.expiresIn * 1000) : null, sources, lastError: null };
+  const set = { status: channel === 'GOOGLE' ? (existing?.status ?? 'CONNECTED') : 'CONNECTED', tokenEnc: encryptField(t.token), tokenExpiresAt: t.expiresIn ? new Date(clock.now().getTime() + t.expiresIn * 1000) : null, sources, lastError: null };
   const conn = existing
     ? await Connection.findOneAndUpdate({ _id: existing._id }, { $set: set }, { new: true }).lean<ConnectionDoc>()
     : (await Connection.create({ accountId: s.a, channel, name: LABEL[channel], createdBy: s.u, ...set })).toObject() as ConnectionDoc;
@@ -316,7 +322,8 @@ export async function saveSources(ctx: AuthContext, id: string, ids: string[], r
     const want = ids.includes(s.id);
     let tokenEnc = s.tokenEnc ?? null;
     if (want) {
-      if (c.channel === 'META') { const pt = pageTokens!.get(s.id); if (!pt) continue; await withReconnect(c, () => meta.subscribe(s.id, pt)); tokenEnc = encryptField(pt); }
+      if (c.channel === 'GOOGLE') { /* status and spend only: no subscription on Google's side */ }
+      else if (c.channel === 'META') { const pt = pageTokens!.get(s.id); if (!pt) continue; await withReconnect(c, () => meta.subscribe(s.id, pt)); tokenEnc = encryptField(pt); }
       else if (!s.subscribed) await withReconnect(c, () => linkedin.subscribe(s.id, token));
     }
     out.push({ id: s.id, name: s.name, tokenEnc: want ? tokenEnc : null, subscribed: want });
@@ -360,7 +367,7 @@ async function completePlatformLead(subId: string) {
       if (!src) throw new Error('This Facebook Page is no longer chosen in Campaigns');
       const lead = await withReconnect(conn, () => meta.lead(s.externalId, decryptField(src.tokenEnc!)));
       answers = metaAnswers(lead);
-      extra = { campaignName: lead.campaign_name ?? null, adSetName: lead.adset_name ?? null, adName: lead.ad_name ?? null, adId: lead.ad_id ?? null, isOrganic: lead.is_organic ?? null };
+      extra = { campaignId: lead.campaign_id ?? null, adSetId: lead.adset_id ?? null, campaignName: lead.campaign_name ?? null, adSetName: lead.adset_name ?? null, adName: lead.ad_name ?? null, adId: lead.ad_id ?? null, isOrganic: lead.is_organic ?? null };
     } else {
       const r = await withReconnect(conn, () => linkedin.response(s.externalId, decryptField(conn.tokenEnc!)));
       answers = linkedinAnswers(r); isTest = !!r.testLead;
@@ -435,19 +442,19 @@ export async function linkedinHook(req: Request) {
  * Catch-up every 15 minutes (ported from the previous CRM's auto-sync): anything a webhook missed since the last run
  * (first run: 24 hours). Already-known leads are skipped by the database rule. Token errors → RECONNECT_NEEDED.
  */
-export async function catchUp(now = clock.now()) {
+export async function catchUp(now = clock.now(), onlyConnectionId?: string) {
   const out = { connections: 0, found: 0, imported: 0, errors: 0 };
-  for await (const c of Connection.find({ channel: { $in: ['META', 'LINKEDIN'] }, status: 'CONNECTED' }).lean<ConnectionDoc>().cursor()) {
+  for await (const c of Connection.find({ $or: [{ channel: { $in: ['META', 'LINKEDIN'] } }, { channel: 'GOOGLE', tokenEnc: { $ne: null } }], status: 'CONNECTED', ...(onlyConnectionId ? { _id: onlyConnectionId } : {}) }).lean<ConnectionDoc>().cursor()) {
     out.connections++;
     const since = c.lastSyncAt ?? new Date(now.getTime() - 86_400_000);
     try {
-      for (const src of c.sources.filter((x) => x.subscribed)) {
+      for (const src of c.channel === 'GOOGLE' ? [] : c.sources.filter((x) => x.subscribed)) {
         if (c.channel === 'META' && src.tokenEnc) {
           const pt = decryptField(src.tokenEnc);
           for (const f of await withReconnect(c, () => meta.forms(src.id, pt))) {
             for (const lead of await withReconnect(c, () => meta.formLeads(f.id, pt, Math.floor(since.getTime() / 1000) - 300))) {
               out.found++;
-              const r = await ingest(c, { externalId: String(lead.id), formExternalId: f.id, formName: f.name, answers: metaAnswers(lead), meta: { pageId: src.id, campaignName: lead.campaign_name ?? null, adSetName: lead.adset_name ?? null, adName: lead.ad_name ?? null, viaCatchUp: true } });
+              const r = await ingest(c, { externalId: String(lead.id), formExternalId: f.id, formName: f.name, answers: metaAnswers(lead), meta: { pageId: src.id, campaignId: lead.campaign_id ?? null, adId: lead.id ? lead.ad_id ?? null : null, adSetId: lead.adset_id ?? null, campaignName: lead.campaign_name ?? null, adSetName: lead.adset_name ?? null, adName: lead.ad_name ?? null, viaCatchUp: true } });
               if (!r.duplicate) out.imported++;
             }
           }
@@ -459,6 +466,8 @@ export async function catchUp(now = clock.now()) {
           }
         }
       }
+      // Stage H: campaign status and spend (Meta, Google)
+      if (c.channel === 'META' || c.channel === 'GOOGLE') await withReconnect(c, () => import('./campaigns.analytics.js').then((x) => x.syncCampaigns(c)));
       await Connection.updateOne({ _id: c._id }, { $set: { lastSyncAt: now, lastError: null } });
     } catch (e) {
       out.errors++;
@@ -481,3 +490,14 @@ export async function maybeCatchUp(now = clock.now()) {
   return catchUp(now);
 }
 export const platformReady = () => ({ META: isConfigured('META'), LINKEDIN: isConfigured('LINKEDIN') });
+
+/** Stage H "Sync now": the same catch-up and status/spend sync for one connection, at most once a minute. */
+export async function syncNow(ctx: AuthContext, id: string) {
+  const c = await Connection.findOne({ _id: id, accountId: ctx.accountId }).lean<ConnectionDoc>();
+  if (!c) throw AppError.notFound();
+  if (c.status !== 'CONNECTED') throw AppError.invalidState('connection', c.status);
+  const hits = await hitCounter(`campaign-sync:${id}`, 60);
+  if (hits.count > 1) throw new AppError(429, 'RATE_LIMITED', 'CMP-14');
+  const out = await catchUp(clock.now(), id);
+  return { ...out, connection: view((await Connection.findById(id).lean<ConnectionDoc>())!) };
+}

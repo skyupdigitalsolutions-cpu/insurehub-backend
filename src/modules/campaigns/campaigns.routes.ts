@@ -33,12 +33,20 @@ export function campaignRoutes() {
   r.post('/submissions/:id/retry', ...m, validate({ params: z.object({ id: z.string().regex(/^sbm_[a-f0-9]{28}$/) }) }), async (req, res) => sendDone(res, await svc.retry(req.auth!, String(req.params.id), req), 'CMP-05'));
   // Meta / LinkedIn: sign in, then choose Pages or ad accounts
   r.get('/platforms', async (_req, res) => sendData(res, svc.platformReady()));
-  r.post('/oauth/:channel/start', ...m, validate({ params: z.object({ channel: z.enum(['meta', 'linkedin']) }) }), async (req, res) =>
-    sendData(res, await svc.oauthStart(req.auth!, String(req.params.channel).toUpperCase() as 'META' | 'LINKEDIN')));
+  r.post('/oauth/:channel/start', ...m, validate({ params: z.object({ channel: z.enum(['meta', 'linkedin', 'google']) }), body: z.object({ connectionId: z.string().regex(/^cnx_[a-f0-9]{28}$/).optional() }).strict() }), async (req, res) =>
+    sendData(res, await svc.oauthStart(req.auth!, String(req.params.channel).toUpperCase() as 'META' | 'LINKEDIN' | 'GOOGLE', req.body?.connectionId)));
+  // Stage H: Sync now (status, spend and missed leads for one connection)
+  r.post('/connections/:id/sync-now', ...m, validate({ params: cnx }), async (req, res) => sendDone(res, await svc.syncNow(req.auth!, String(req.params.id)), 'CMP-13'));
   r.get('/connections/:id/sources', allow('campaigns.manage'), validate({ params: cnx }), async (req, res) => sendData(res, await svc.sources(req.auth!, String(req.params.id))));
   r.put('/connections/:id/sources', ...m, validate({ params: cnx, body: z.object({ ids: z.array(z.string().max(120)).max(100) }).strict() }), async (req, res) =>
     sendDone(res, await svc.saveSources(req.auth!, String(req.params.id), req.body.ids, req), 'CMP-11'));
   r.get('/leads/:leadId/answers', validate({ params: z.object({ leadId: z.string().regex(/^led_[a-f0-9]{28}$/) }) }), async (req, res) => sendData(res, await svc.leadAnswers(req.auth!, String(req.params.leadId))));
+  // Stage H: campaign list, detail and leads (ids: adc_ = platform campaign, lfm_ = website or LinkedIn form)
+  const camp = z.object({ id: z.string().regex(/^(adc|lfm)_[a-f0-9]{28}$/) });
+  r.get('/', validate({ query: z.object({ channel: z.enum(['WEBSITE', 'GOOGLE', 'META', 'LINKEDIN']).optional(), status: z.string().max(20).optional() }) }), async (req, res) =>
+    sendData(res, await (await import('./campaigns.analytics.js')).list(req.auth!, res.locals.query as { channel?: string; status?: string })));
+  r.get('/:id', validate({ params: camp }), async (req, res) => sendData(res, await (await import('./campaigns.analytics.js')).detail(req.auth!, String(req.params.id))));
+  r.get('/:id/leads', validate({ params: camp }), async (req, res) => sendData(res, await (await import('./campaigns.analytics.js')).leads(req.auth!, String(req.params.id))));
   return r;
 }
 
@@ -56,8 +64,8 @@ export function hookRoutes() {
   r.get('/oauth/:channel/callback', async (req, res) => {
     const app = process.env.PUBLIC_APP_URL ?? 'http://localhost:5173';
     const channel = String(req.params.channel).toUpperCase();
-    if ((channel !== 'META' && channel !== 'LINKEDIN') || req.query.error || !req.query.code) return res.redirect(302, `${app}/?campaigns=cancelled`);
-    try { const c = await svc.oauthCallback(channel, String(req.query.code), String(req.query.state ?? '')); res.redirect(302, `${app}/?campaigns=connected&connection=${c._id}`); }
+    if (!['META', 'LINKEDIN', 'GOOGLE'].includes(channel) || req.query.error || !req.query.code) return res.redirect(302, `${app}/?campaigns=cancelled`);
+    try { const c = await svc.oauthCallback(channel as 'META' | 'LINKEDIN' | 'GOOGLE', String(req.query.code), String(req.query.state ?? '')); res.redirect(302, `${app}/?campaigns=connected&connection=${c._id}`); }
     catch { res.redirect(302, `${app}/?campaigns=error`); }
   });
   r.post('/website', express.urlencoded({ extended: false, limit: '64kb' }), async (req, res) => {

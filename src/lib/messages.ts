@@ -109,6 +109,9 @@ export const MESSAGES = {
   'CMP-10': '{channel} is not set up yet. Ask SkyUp to add the approved app details.',
   'CMP-11': 'Lead sources saved. New leads from them will arrive here.',
   'CMP-12': '{channel} could not sync: {name}. We will keep trying every 15 minutes.',
+  'CMP-13': 'Synced: status and spend are up to date.',
+  'CMP-14': 'Synced a moment ago. Try again in a minute.',
+  'CMP-15': 'Sign in to Google Ads from your Google lead-form connection.',
   // ── Stage D (change analysis #18, #21, #23, #25) ──
   'DSH-26': 'Follow-up overdue: {name} was due {time}.',
   'CAT-41': 'New in the catalogue: {product} by {insurer}.',

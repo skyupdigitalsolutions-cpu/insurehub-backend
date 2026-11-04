@@ -103,6 +103,8 @@ export const CAPABILITIES = {
   /** Campaigns (Module 17): the advisor connects channels; assistants see imported leads and their form answers. */
   'campaigns.manage': ['ADV'],
   'campaigns.view': ['ADV', 'AST'],
+  /** Stage H: ad spend and cost per lead (the advisor only, Q81). */
+  'campaigns.spend': ['ADV'],
   /** Brochures: advisors (own products, P-58 attachments) and SkyUp (P-23 OCR). */
   'brochure.upload': ['ADV', 'STF', 'ADM'],
   /** Suggest a correction to a verified product (P-58). */

@@ -77,11 +77,57 @@ const submissionSchema = new Schema(
     reason: { type: String, default: null },
     leadId: { type: String, default: null }, customerId: { type: String, default: null },
     attempts: { type: Number, default: 0 },
+    /** Stage H: the platform campaign and ad this lead came from (Meta, Google), for the campaign pages. */
+    adCampaignId: { type: String, default: null }, adCreativeId: { type: String, default: null },
   },
   { timestamps: true, versionKey: false, minimize: false },
 );
 submissionSchema.index({ connectionId: 1, externalId: 1 }, { unique: true, name: 'one_submission_per_platform_lead' });
 submissionSchema.index({ accountId: 1, createdAt: -1 });
 submissionSchema.index({ accountId: 1, leadId: 1 });
+submissionSchema.index({ accountId: 1, adCampaignId: 1, createdAt: -1 });
+submissionSchema.index({ accountId: 1, formId: 1, createdAt: -1 });
 export type SubmissionDoc = InferSchemaType<typeof submissionSchema> & { _id: string; createdAt: Date };
 export const Submission = model('LeadSubmission', submissionSchema, 'lead_submissions');
+
+/**
+ * Stage H (change #1 items 9–13): a platform campaign (Meta, Google), created when its first lead arrives or when a
+ * sync finds it. Status and lifetime spend are read every 15 minutes; "Not syncing" is shown when the connection is
+ * not connected (the stored status stays as last read).
+ */
+export const PLATFORM_STATUSES = ['ACTIVE', 'IN_REVIEW', 'PAUSED', 'NOT_APPROVED', 'ENDED'] as const;
+const adCampaignSchema = new Schema(
+  {
+    _id: { type: String, default: () => newId('adc') },
+    accountId: { type: String, required: true },
+    connectionId: { type: String, required: true },
+    channel: { type: String, enum: CHANNELS, required: true },
+    externalCampaignId: { type: String, required: true },
+    name: { type: String, default: null },
+    platformStatus: { type: String, enum: [...PLATFORM_STATUSES, null], default: null },
+    statusReason: { type: String, default: null },
+    spendAmount: { type: Number, default: null }, spendCurrency: { type: String, default: null }, spendSyncedAt: { type: Date, default: null },
+    startedOn: { type: String, default: null }, // YYYY-MM-DD
+    lastSyncedAt: { type: Date, default: null }, lastSyncError: { type: String, default: null },
+  },
+  { timestamps: true, versionKey: false },
+);
+adCampaignSchema.index({ connectionId: 1, externalCampaignId: 1 }, { unique: true, name: 'one_campaign_per_connection' });
+adCampaignSchema.index({ accountId: 1, channel: 1 });
+export type AdCampaignDoc = InferSchemaType<typeof adCampaignSchema> & { _id: string; createdAt: Date };
+export const AdCampaign = model('AdCampaign', adCampaignSchema, 'ad_campaigns');
+
+/** An ad inside a campaign (leads per ad on the campaign page). */
+const adCreativeSchema = new Schema(
+  {
+    _id: { type: String, default: () => newId('adr') },
+    accountId: { type: String, required: true },
+    campaignId: { type: String, required: true },
+    externalAdId: { type: String, required: true },
+    name: { type: String, default: null }, adSetName: { type: String, default: null }, placement: { type: String, default: null },
+  },
+  { timestamps: true, versionKey: false },
+);
+adCreativeSchema.index({ campaignId: 1, externalAdId: 1 }, { unique: true, name: 'one_ad_per_campaign' });
+export type AdCreativeDoc = InferSchemaType<typeof adCreativeSchema> & { _id: string };
+export const AdCreative = model('AdCreative', adCreativeSchema, 'ad_creatives');
